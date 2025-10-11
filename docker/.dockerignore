@@ -1,0 +1,8 @@
+node_modules
+.dist
+.cache
+.git
+.gitignore
+.DS_Store
+coverage
+public/cv.pdf
