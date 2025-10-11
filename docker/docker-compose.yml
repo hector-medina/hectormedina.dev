@@ -1,0 +1,14 @@
+services:
+  web:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.dev
+    ports:
+      - "4321:4321"
+    volumes:
+      - ../app/package.json:/app/package.json
+      - ../app/package-lock.json:/app/package-lock.json
+      - ../app/public:/app/public
+      - ../app/src:/app/src
+    environment:
+      - ASTRO_SITE=${ASTRO_SITE:-http://localhost:4321}

@@ -1,0 +1,14 @@
+# Etapa base con Node 20
+FROM node:20-alpine AS base
+WORKDIR /app
+
+# Utilidades mínimas
+RUN apk add --no-cache git bash
+
+# Dependencias: usa lock si existe
+COPY app/* ./
+RUN npm ci || npm install
+
+# Servidor de desarrollo
+EXPOSE 4321
+CMD ["npm","run","dev","--","--host","0.0.0.0","--port","4321"]
