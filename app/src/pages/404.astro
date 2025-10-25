@@ -1,0 +1,26 @@
+---
+import Base from "../layouts/Base.astro";
+---
+
+<Base title="Page not found — Héctor Medina">
+  <section class="flex flex-col items-center justify-center text-center py-20">
+    <div><img
+      src="/assets/pages/404.png"
+      alt="Someone looking for something under a carpet"
+      class="w-64 max-w-full mb-8 opacity-90"
+      loading="lazy"
+    /></div>
+    <div>
+    <h1 class="text-3xl font-bold mb-4 dark:text-white">Oops!</h1>
+    <p class="text-lg text-slate-600 dark:text-slate-400 mb-6">
+      It seems what you’re looking for is not here.<br />
+      Maybe it’s hiding somewhere else?
+    </p>
+    <p class="text-lg text-slate-600 dark:text-slate-400 mb-6">
+      Status code: 404 - Not found.
+    </p>
+    <a href="/" class="btn bg-blue-600 text-white px-5 py-2 rounded-lg hover:bg-blue-700 transition">
+      Go back home
+    </a></div>
+  </section>
+</Base>

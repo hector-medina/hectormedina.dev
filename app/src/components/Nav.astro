@@ -1,0 +1,18 @@
+---
+const links = [
+{ href: '/', label: 'Home' },
+{ href: '/blog/', label: 'Blog' },
+{ href: '#contact', label: 'Contact' }
+];
+---
+<header class="header">
+<nav class="container nav">
+<a href="/" class="badge">
+<span>💠</span><strong>hectormedina</strong>
+</a>
+<div style="display:flex;gap:16px;align-items:center">
+{links.map(l => <a href={l.href}>{l.label}</a>)}
+<a class="btn" href="/cv.pdf">Download CV</a>
+</div>
+</nav>
+</header>

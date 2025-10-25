@@ -1,0 +1,70 @@
+---
+import "../styles/tailwind.css";
+import ThemeToggle from "../components/ThemeToggle.astro";
+import { Icon } from "astro-icon/components";
+
+const { title = "Héctor Medina — DevOps · SRE", description = "Blog y portfolio", ogImage = "/favicon.svg" } = Astro.props;
+---
+
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <meta name="description" content={description} />
+    <link rel="icon" href="/favicon.ico" />
+    <meta property="og:title" content={title} />
+    <meta property="og:description" content={description} />
+    <meta property="og:image" content={ogImage} />
+    <title>{title}</title>
+
+    <!-- 👇 Evita FOUC: aplica tema antes de pintar -->
+    <script is:inline>
+        try {
+            const saved = localStorage.getItem('theme');               // 'dark' | 'light' | null
+            const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+            const shouldBeDark = saved ? (saved === 'dark') : prefersDark;
+            document.documentElement.classList.toggle('dark', shouldBeDark);
+        } catch (e) {}
+    </script>
+    </script>
+  </head>
+  <body class="min-h-screen">
+    <header class="sticky top-0 backdrop-blur bg-black/5 dark:bg-black/40 border-b border-slate-200 dark:border-slate-800">
+      <nav class="container max-w-5xl flex items-center justify-between h-14">
+        <a href="/" class="badge"><span><strong>＞</strong></span><strong>hectormedina.dev</strong></a>
+        <div class="flex items-center gap-3">
+          <a href="/blog/">Blog</a>
+          <a href="#contact">Contact</a>
+          <a class="btn-ghost" href="/cv.pdf">CV</a>
+          <ThemeToggle />  <!-- 👈 botón -->
+        </div>
+      </nav>
+    </header>
+
+    <main class="container max-w-5xl py-10">
+      <slot />
+    </main>
+
+    <footer class="border-t border-slate-200 dark:border-slate-800 py-8 mt-10">
+      <div class="container max-w-5xl flex items-center justify-between text-slate-600 dark:text-muted">
+        <div>{new Date().getFullYear()} Héctor Medina</div>
+        <div class="flex gap-4">
+          <a href="https://github.com/hector-medina" target="_blank" aria-label="GitHub"
+             class="text-slate-600 dark:text-slate-400 hover:text-black dark:hover:text-white transition">
+            <Icon name="fa6-brands:github" width="22" height="22" />
+          </a>
+          <a href="https://www.linkedin.com/in/hector-medina-cabanelas/" target="_blank" aria-label="LinkedIn"
+             class="text-[#0077b5] hover:opacity-85 transition">
+            <Icon name="fa6-brands:linkedin" width="22" height="22" />
+          </a> 
+        </div>
+      </div>
+    </footer>
+
+    <!-- Hidrata el botón (pequeñito y aislado) -->
+    <script type="module">
+      // Nada más: ThemeToggle se hidrata con client:load
+    </script>
+  </body>
+</html>
