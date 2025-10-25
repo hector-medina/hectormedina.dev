@@ -1,0 +1,22 @@
+---
+export interface PostFrontmatter {
+title: string;
+description?: string;
+pubDate: string; // ISO
+tags?: string[];
+}
+
+
+interface Props { url: string; data: PostFrontmatter }
+const { url, data } = Astro.props;
+---
+<a href={url} class="card" style="display:block">
+<div class="post-meta">{new Date(data.pubDate).toLocaleDateString()}</div>
+<h3 style="margin:4px 0 8px">{data.title}</h3>
+{ data.description && <p>{data.description}</p> }
+{ data.tags && (
+<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">
+{data.tags.map(t => <span class="badge">#{t}</span>)}
+</div>
+)}
+</a>
