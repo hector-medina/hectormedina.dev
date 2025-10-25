@@ -20,7 +20,7 @@ const posts = (await getCollection("blog")).sort((a,b) => +b.data.pubDate - +a.d
           {data.tags && (
             <div class="mt-3 flex flex-wrap gap-2">
               {data.tags.map((tag) => (
-                <span class="ttext-slate-700 dark:text-slate-100
+                <span class="text-slate-700 dark:text-slate-100
          bg-slate-100 dark:bg-slate-800
          border border-slate-300 dark:border-slate-700
          text-xs px-2 py-1 rounded-full
