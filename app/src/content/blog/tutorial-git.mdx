@@ -1,0 +1,895 @@
+---
+title: "Git para profesionales: tutorial práctico de principio a fin"
+description: "Una guía práctica para dominar Git: repositorios, staging area, commits, ramas, merges, tags, remotos, resolución de conflictos y hooks."
+pubDate: "2025-09-07"
+category: "DevOps"
+tags: ["git", "version-control", "devops", "workflow", "hooks"]
+---
+
+Git no es solo una herramienta para guardar código. Es un sistema distribuido de control de versiones que registra snapshots del proyecto, permite trabajar en paralelo, auditar cambios, recuperar estados anteriores y coordinar entregas con otros equipos.
+
+Este tutorial está pensado para usar Git en un entorno profesional: comandos concretos, decisiones habituales, convenciones útiles y errores que conviene evitar. La idea es que sea eminentemente práctico: cada concepto viene acompañado de comandos y decisiones reales de trabajo.
+
+## Modelo mental de Git
+
+Antes de memorizar comandos, conviene entender las piezas principales:
+
+- **Working tree**: los archivos reales que estás editando en tu directorio.
+- **Staging area** o **index**: zona intermedia donde preparas exactamente qué cambios entrarán en el próximo commit.
+- **Repository**: la base de datos local de Git, guardada en `.git/`.
+- **Commit**: snapshot versionado del proyecto, identificado por un hash SHA.
+- **Branch**: puntero móvil a un commit. Normalmente representa una línea de trabajo.
+- **HEAD**: referencia al commit o rama donde estás situado ahora.
+- **Remote**: copia remota del repositorio, por ejemplo GitHub, GitLab o Bitbucket.
+- **Tag**: referencia fija a un commit, usada normalmente para marcar versiones.
+
+El flujo básico es:
+
+```bash
+editas archivos
+git status
+git add
+git commit
+git push
+```
+
+## Configuración inicial
+
+Configura tu identidad antes de crear commits. Git la usará para firmar la autoría de cada cambio.
+
+```bash
+git config --global user.name "Tu Nombre"
+git config --global user.email "tu.email@example.com"
+```
+
+Define `main` como rama inicial por defecto:
+
+```bash
+git config --global init.defaultBranch main
+```
+
+Activa colores y una estrategia razonable para `pull`:
+
+```bash
+git config --global color.ui auto
+git config --global pull.rebase false
+```
+
+Si tu equipo prefiere historial lineal, puedes usar rebase al hacer pull:
+
+```bash
+git config --global pull.rebase true
+```
+
+La regla profesional es simple: usa la política del equipo y documéntala. Mezclar estrategias sin acuerdo genera historiales difíciles de leer.
+
+## Crear un repositorio desde cero
+
+Crea el directorio del proyecto e inicializa Git:
+
+```bash
+mkdir mi-proyecto
+cd mi-proyecto
+git init -b main
+```
+
+Crea archivos básicos:
+
+```bash
+printf "# Mi proyecto\n" > README.md
+printf "node_modules/\n.env\n.DS_Store\n" > .gitignore
+```
+
+Comprueba el estado:
+
+```bash
+git status
+```
+
+Añade los archivos al staging area:
+
+```bash
+git add README.md .gitignore
+```
+
+Crea el primer commit:
+
+```bash
+git commit -m "chore: inicializa repositorio"
+```
+
+En este punto ya tienes un historial local. Todavía no existe copia remota.
+
+## Conectar un remoto y hacer push
+
+Crea un repositorio vacío en GitHub, GitLab o Bitbucket. Luego enlázalo como `origin`:
+
+```bash
+git remote add origin git@github.com:usuario/mi-proyecto.git
+```
+
+Verifica los remotos configurados:
+
+```bash
+git remote -v
+```
+
+Sube la rama principal y deja configurado el upstream:
+
+```bash
+git push -u origin main
+```
+
+El parámetro `-u` guarda la relación entre tu rama local `main` y `origin/main`. Después de eso, normalmente basta con:
+
+```bash
+git push
+git pull
+```
+
+## Staging area: preparar commits con precisión
+
+El staging area es una de las partes más importantes de Git. No tienes que commitear todo lo que modificaste. Puedes seleccionar cambios concretos.
+
+Ver archivos modificados:
+
+```bash
+git status
+```
+
+Ver diferencias no preparadas:
+
+```bash
+git diff
+```
+
+Preparar un archivo completo:
+
+```bash
+git add src/app.js
+```
+
+Preparar todo:
+
+```bash
+git add .
+```
+
+Preparar cambios por bloques interactivos:
+
+```bash
+git add -p
+```
+
+`git add -p` es clave en trabajo profesional porque permite construir commits atómicos. Si en un archivo mezclaste un bugfix y un refactor, puedes staged solo el bugfix y dejar el refactor para otro commit.
+
+Ver lo que ya esta preparado para commit:
+
+```bash
+git diff --staged
+```
+
+Quitar un archivo del staging area sin perder cambios:
+
+```bash
+git restore --staged src/app.js
+```
+
+Descartar cambios locales de un archivo:
+
+```bash
+git restore src/app.js
+```
+
+Usa `restore` con cuidado: descartar cambios locales elimina trabajo no commiteado.
+
+## Commits profesionales
+
+Un buen commit debe ser pequeno, coherente y reversible. Si falla produccion, deberias poder identificarlo, revertirlo y entenderlo rápido.
+
+Ejemplo de commit pobre:
+
+```bash
+git commit -m "cambios"
+```
+
+Ejemplo de commit útil:
+
+```bash
+git commit -m "fix: valida token expirado en login"
+```
+
+Una convencion frecuente es **Conventional Commits**:
+
+```text
+feat: agrega busqueda por tags
+fix: corrige paginacion de resultados
+docs: documenta variables de entorno
+test: cubre autenticacion con token expirado
+refactor: separa cliente HTTP
+chore: actualiza dependencias
+ci: ajusta pipeline de despliegue
+```
+
+Buenas prácticas:
+
+- Un commit debe representar una unidad lógica de cambio.
+- Evita mezclar formato, refactor y funcionalidad en el mismo commit.
+- Escribe el mensaje en imperativo: "agrega", "corrige", "elimina".
+- Antes de commitear, revisa `git diff --staged`.
+- No incluyas secretos, credenciales, `.env`, claves privadas ni tokens.
+
+Modificar el último commit, si todavía no lo compartiste:
+
+```bash
+git add archivo-olvidado.js
+git commit --amend
+```
+
+Cambiar solo el mensaje del último commit:
+
+```bash
+git commit --amend -m "fix: corrige validación de permisos"
+```
+
+Evita hacer `amend` sobre commits ya publicados si otras personas ya basaron trabajo encima. Reescribir historia compartida requiere coordinacion.
+
+## Consultar historial
+
+Ver historial básico:
+
+```bash
+git log
+```
+
+Ver historial compacto:
+
+```bash
+git log --oneline
+```
+
+Ver grafo de ramas:
+
+```bash
+git log --oneline --graph --decorate --all
+```
+
+Ver que cambio introdujo un commit:
+
+```bash
+git show <hash>
+```
+
+Buscar commits por texto:
+
+```bash
+git log --grep="login"
+```
+
+Ver quien modifico cada linea de un archivo:
+
+```bash
+git blame src/auth.js
+```
+
+`git blame` no debería usarse para culpar personas, sino para encontrar contexto técnico: issue asociado, PR, fecha, decisión y commit original.
+
+## Ramas: crear, navegar y limpiar
+
+Las ramas permiten trabajar en paralelo sin ensuciar `main`.
+
+Listar ramas locales:
+
+```bash
+git branch
+```
+
+Listar ramas locales y remotas:
+
+```bash
+git branch -a
+```
+
+Crear y cambiar a una rama nueva:
+
+```bash
+git switch -c feature/busqueda-por-tags
+```
+
+Cambiar de rama:
+
+```bash
+git switch main
+git switch feature/busqueda-por-tags
+```
+
+Renombrar la rama actual:
+
+```bash
+git branch -m feature/busqueda-tags
+```
+
+Eliminar una rama local ya mergeada:
+
+```bash
+git branch -d feature/busqueda-tags
+```
+
+Forzar borrado de una rama local no mergeada:
+
+```bash
+git branch -D feature/busqueda-tags
+```
+
+Usa nombres de rama predecibles:
+
+```text
+feature/autenticacion-oauth
+fix/login-token-expirado
+hotfix/parche-produccion
+chore/actualiza-node
+docs/guía-instalacion
+```
+
+En equipos profesionales, una rama debería tener un objetivo claro y una vida corta. Las ramas largas acumulan conflictos y hacen más caro el merge.
+
+## Sincronizar con el remoto
+
+Descargar referencias remotas sin modificar tu rama actual:
+
+```bash
+git fetch origin
+```
+
+Actualizar tu rama actual con cambios remotos:
+
+```bash
+git pull
+```
+
+`git pull` equivale a `git fetch` seguido de una integración, normalmente `merge` o `rebase` según tu configuración.
+
+Subir una rama nueva:
+
+```bash
+git push -u origin feature/busqueda-por-tags
+```
+
+Eliminar una rama remota:
+
+```bash
+git push origin --delete feature/busqueda-por-tags
+```
+
+Limpiar referencias remotas que ya no existen:
+
+```bash
+git fetch --prune
+```
+
+## Merge: integrar ramas
+
+Supongamos que terminaste una feature y quieres integrarla en `main`.
+
+Primero actualiza `main`:
+
+```bash
+git switch main
+git pull
+```
+
+Luego mergea la rama:
+
+```bash
+git merge feature/busqueda-por-tags
+```
+
+Si Git puede avanzar `main` directamente, hará un **fast-forward merge**. Si las ramas divergieron, creará un **merge commit**.
+
+Para forzar un merge commit, útil cuando quieres dejar visible la integración de una rama:
+
+```bash
+git merge --no-ff feature/busqueda-por-tags
+```
+
+Abortar un merge en curso:
+
+```bash
+git merge --abort
+```
+
+Limpiar la rama después de integrarla:
+
+```bash
+git branch -d feature/busqueda-por-tags
+git push origin --delete feature/busqueda-por-tags
+```
+
+## Resolver conflictos
+
+Un conflicto aparece cuando Git no puede combinar cambios automáticamente.
+
+Ejemplo de archivo con conflicto:
+
+```text
+<<<<<<< HEAD
+versión actual en tu rama
+=======
+versión que viene de la rama mergeada
+>>>>>>> feature/busqueda-por-tags
+```
+
+Flujo práctico:
+
+```bash
+git status
+```
+
+Abre cada archivo en conflicto, decide el resultado final y elimina los marcadores `<<<<<<<`, `=======` y `>>>>>>>`.
+
+Después:
+
+```bash
+git add archivo-en-conflicto.js
+git commit
+```
+
+Consejos:
+
+- Resuelve el conflicto pensando en el comportamiento final, no en "mi cambio contra tu cambio".
+- Ejecuta tests después de resolver.
+- Si el conflicto es grande, revisa el historial de ambos lados con `git log --merge`.
+- Si te equivocaste, usa `git merge --abort` antes de commitear el merge.
+
+## Rebase: historial lineal sin merge commits innecesarios
+
+Aunque este tutorial se centra en merge, un profesional debe conocer `rebase`.
+
+Actualizar una rama de feature sobre la última versión de `main`:
+
+```bash
+git switch feature/busqueda-por-tags
+git fetch origin
+git rebase origin/main
+```
+
+Esto reaplica tus commits encima de `origin/main`, creando un historial lineal.
+
+Reglas prácticas:
+
+- Rebase es útil en ramas locales o ramas propias.
+- No hagas rebase de ramas compartidas sin coordinar.
+- Si hay conflictos, resuélvelos, haz `git add` y continúa:
+
+```bash
+git rebase --continue
+```
+
+Abortar:
+
+```bash
+git rebase --abort
+```
+
+Si después de un rebase necesitas subir cambios a una rama remota que ya existía:
+
+```bash
+git push --force-with-lease
+```
+
+Usa `--force-with-lease`, no `--force`. Es una protección: evita sobrescribir cambios remotos que no tienes en local.
+
+## Tags: marcar versiones
+
+Los tags se usan para marcar puntos importantes del historial, especialmente releases.
+
+Crear un tag ligero:
+
+```bash
+git tag v1.0.0
+```
+
+Crear un tag anotado:
+
+```bash
+git tag -a v1.0.0 -m "release: version 1.0.0"
+```
+
+En proyectos profesionales, prefiere tags anotados para releases porque incluyen mensaje, autor y fecha.
+
+Listar tags:
+
+```bash
+git tag
+```
+
+Ver información de un tag:
+
+```bash
+git show v1.0.0
+```
+
+Subir un tag concreto:
+
+```bash
+git push origin v1.0.0
+```
+
+Subir todos los tags locales:
+
+```bash
+git push origin --tags
+```
+
+Eliminar un tag local:
+
+```bash
+git tag -d v1.0.0
+```
+
+Eliminar un tag remoto:
+
+```bash
+git push origin --delete v1.0.0
+```
+
+Versionado semántico habitual:
+
+```text
+MAJOR.MINOR.PATCH
+```
+
+Ejemplos:
+
+- `v1.0.0`: primera versión estable.
+- `v1.1.0`: nueva funcionalidad compatible.
+- `v1.1.1`: corrección compatible.
+- `v2.0.0`: cambio incompatible.
+
+## Stash: guardar trabajo temporalmente
+
+`stash` sirve para apartar cambios no commiteados y dejar limpio el working tree.
+
+Guardar cambios:
+
+```bash
+git stash push -m "wip: formulario de login"
+```
+
+Listar stashes:
+
+```bash
+git stash list
+```
+
+Aplicar el último stash y eliminarlo de la lista:
+
+```bash
+git stash pop
+```
+
+Aplicar sin eliminar:
+
+```bash
+git stash apply stash@{0}
+```
+
+Eliminar un stash:
+
+```bash
+git stash drop stash@{0}
+```
+
+`stash` es útil, pero no debe convertirse en almacen permanente. Si el cambio importa, crea una rama y commitea.
+
+## Deshacer cambios sin destruir trabajo
+
+Git permite corregir errores, pero algunos comandos reescriben historia. La diferencia importa.
+
+Deshacer cambios no commiteados en un archivo:
+
+```bash
+git restore src/app.js
+```
+
+Sacar cambios del staging area:
+
+```bash
+git restore --staged src/app.js
+```
+
+Revertir un commit publicado creando un commit inverso:
+
+```bash
+git revert <hash>
+```
+
+`revert` es la opción segura para historia compartida porque no elimina commits: agrega uno nuevo que deshace el anterior.
+
+Deshacer el último commit manteniendo cambios en staging:
+
+```bash
+git reset --soft HEAD~1
+```
+
+Deshacer el último commit manteniendo cambios en el working tree:
+
+```bash
+git reset --mixed HEAD~1
+```
+
+Deshacer el último commit y borrar cambios:
+
+```bash
+git reset --hard HEAD~1
+```
+
+`reset --hard` elimina cambios locales. Úsalo solo si estás completamente seguro o si tienes una copia recuperable.
+
+## Recuperación con reflog
+
+`reflog` registra movimientos recientes de `HEAD`. Es una herramienta de recuperación cuando hiciste un reset, rebase o checkout incorrecto.
+
+Ver reflog:
+
+```bash
+git reflog
+```
+
+Volver a un estado anterior:
+
+```bash
+git switch -c rescue/<descripción> <hash-del-reflog>
+```
+
+Crear una rama de rescate es más seguro que mover directamente `main`. Primero recuperas el estado, luego decides que integrar.
+
+## Git hooks
+
+Los hooks son scripts que Git ejecuta automáticamente en eventos concretos: antes de commitear, antes de hacer push, al recibir commits en un servidor, etc.
+
+Por defecto viven en:
+
+```text
+.git/hooks/
+```
+
+Pero esa carpeta no se versiona. Para compartir hooks en el equipo, crea una carpeta versionada:
+
+```bash
+mkdir .githooks
+git config core.hooksPath .githooks
+```
+
+### Hook `pre-commit`
+
+Se ejecuta antes de crear un commit. Es ideal para formateo, linting y tests rápidos.
+
+Crea `.githooks/pre-commit`:
+
+```bash
+#!/usr/bin/env sh
+set -e
+
+echo "Running checks before commit..."
+
+npm run lint
+npm test
+```
+
+Dale permisos de ejecución:
+
+```bash
+chmod +x .githooks/pre-commit
+```
+
+Commitea la configuración:
+
+```bash
+git add .githooks/pre-commit
+git commit -m "chore: agrega hook pre-commit"
+```
+
+Desde ahora, si `npm run lint` o `npm test` fallan, Git bloqueará el commit.
+
+### Hook `commit-msg`
+
+Se ejecuta después de escribir el mensaje del commit y permite validarlo.
+
+Crea `.githooks/commit-msg`:
+
+```bash
+#!/usr/bin/env sh
+set -e
+
+commit_msg_file="$1"
+commit_msg="$(cat "$commit_msg_file")"
+
+pattern='^(feat|fix|docs|test|refactor|chore|ci|build|perf|style)(\(.+\))?: .+'
+
+if ! printf "%s" "$commit_msg" | grep -Eq "$pattern"; then
+  echo "Invalid commit message."
+  echo "Use Conventional Commits, for example:"
+  echo "  feat: agrega busqueda por tags"
+  echo "  fix(auth): corrige token expirado"
+  exit 1
+fi
+```
+
+Dale permisos:
+
+```bash
+chmod +x .githooks/commit-msg
+```
+
+### Hook `pre-push`
+
+Se ejecuta antes de subir cambios al remoto. Puede correr una suite más cara que la de `pre-commit`.
+
+```bash
+#!/usr/bin/env sh
+set -e
+
+echo "Running checks before push..."
+
+npm test
+npm run build
+```
+
+Recomendación práctica:
+
+- `pre-commit`: checks rápidos.
+- `commit-msg`: convencion de mensajes.
+- `pre-push`: tests más completos y build.
+- CI/CD remoto: fuente final de verdad.
+
+Los hooks locales mejoran feedback, pero no reemplazan la integración continua. Cualquier validación crítica debe ejecutarse también en CI.
+
+## Flujo profesional recomendado
+
+Un flujo simple y robusto para equipos:
+
+```bash
+git switch main
+git pull
+git switch -c feature/nueva-capacidad
+
+# editar código
+git status
+git diff
+git add -p
+git commit -m "feat: agrega nueva capacidad"
+
+git fetch origin
+git rebase origin/main
+git push -u origin feature/nueva-capacidad
+```
+
+Después abres un pull request o merge request.
+
+Antes de pedir review:
+
+```bash
+git status
+git log --oneline --graph --decorate --all -n 20
+npm test
+```
+
+Cuando el PR este aprobado, integra con la política del repositorio:
+
+- **Squash merge**: un commit final por PR. Historial limpio.
+- **Merge commit**: conserva la estructura completa de la rama.
+- **Rebase and merge**: mantiene historial lineal con commits individuales.
+
+No hay una unica opción correcta. Lo importante es que el equipo use una convencion estable.
+
+## Aliases útiles
+
+Puedes crear aliases para comandos frecuentes:
+
+```bash
+git config --global alias.st status
+git config --global alias.co switch
+git config --global alias.br branch
+git config --global alias.cm commit
+git config --global alias.lg "log --oneline --graph --decorate --all"
+```
+
+Uso:
+
+```bash
+git st
+git lg
+```
+
+No abuses de aliases en documentación compartida. En guías de equipo conviene escribir los comandos completos para que sean universales.
+
+## Checklist antes de hacer push
+
+- `git status` no muestra archivos inesperados.
+- `git diff --staged` contiene solo lo que quieres commitear.
+- Los commits son atómicos y tienen mensajes claros.
+- No hay secretos, credenciales ni archivos generados innecesarios.
+- La rama esta actualizada con `main` o con la rama base.
+- Los tests relevantes pasan en local.
+- El push va a la rama correcta.
+
+## Chuleta de comandos
+
+| Objetivo | Comando |
+| --- | --- |
+| Ver estado | `git status` |
+| Ver cambios no staged | `git diff` |
+| Ver cambios staged | `git diff --staged` |
+| Preparar archivo | `git add archivo` |
+| Preparar por bloques | `git add -p` |
+| Crear commit | `git commit -m "tipo: mensaje"` |
+| Ver historial compacto | `git log --oneline` |
+| Ver grafo | `git log --oneline --graph --decorate --all` |
+| Crear rama | `git switch -c feature/nombre` |
+| Cambiar de rama | `git switch nombre` |
+| Mergear rama | `git merge nombre` |
+| Descargar remoto | `git fetch origin` |
+| Actualizar rama | `git pull` |
+| Subir rama | `git push -u origin rama` |
+| Crear tag anotado | `git tag -a v1.0.0 -m "release: version 1.0.0"` |
+| Subir tag | `git push origin v1.0.0` |
+| Guardar cambios temporales | `git stash push -m "wip: descripción"` |
+| Revertir commit publicado | `git revert <hash>` |
+| Ver recuperación | `git reflog` |
+
+## Glosario
+
+**Branch**: referencia móvil a un commit. Se usa para desarrollar cambios en paralelo.
+
+**Commit**: snapshot del repositorio en un punto del tiempo. Tiene hash, autor, fecha, mensaje y referencia al commit padre.
+
+**Conflict**: situación donde Git no puede fusionar cambios automáticamente y necesita una decisión manual.
+
+**Fast-forward**: merge donde la rama destino avanza directamente al commit de la rama fuente porque no hay divergencia.
+
+**Fetch**: descarga referencias y objetos del remoto sin modificar tu working tree.
+
+**HEAD**: referencia al commit actual o a la rama actual.
+
+**Hook**: script ejecutado automáticamente por Git ante un evento, como `pre-commit`, `commit-msg` o `pre-push`.
+
+**Index**: otro nombre para el staging area.
+
+**Merge**: integración de dos líneas de historial.
+
+**Merge commit**: commit especial con dos o más padres, creado al integrar ramas divergentes.
+
+**Origin**: nombre convencional del remoto principal.
+
+**Pull**: operación que combina `fetch` con `merge` o `rebase`.
+
+**Push**: subida de commits, ramas o tags desde tu repositorio local al remoto.
+
+**Rebase**: técnica para reaplicar commits encima de otra base, normalmente para mantener historial lineal.
+
+**Reflog**: registro local de movimientos de referencias como `HEAD`. Sirve para recuperar estados recientes.
+
+**Remote**: repositorio externo conectado al local.
+
+**Repository**: base de datos de Git que guarda objetos, referencias e historial.
+
+**Reset**: comando que mueve referencias y puede modificar staging area o working tree.
+
+**Restore**: comando para descartar o deshacer cambios en archivos o en el staging area.
+
+**SHA**: identificador criptográfico de un objeto Git, normalmente usado para referirse a commits.
+
+**Squash**: técnica para combinar varios commits en uno.
+
+**Staging area**: zona donde preparas los cambios exactos que entrarán en el próximo commit.
+
+**Tag**: referencia fija a un commit, usada para marcar versiones o releases.
+
+**Upstream**: rama remota asociada a una rama local. Permite usar `git pull` y `git push` sin especificar remoto y rama cada vez.
+
+**Working tree**: archivos del proyecto tal como existen en tu directorio de trabajo.
+
+## Cierre
+
+Dominar Git no consiste en saber todos los comandos, sino en entender el historial, preparar commits pequeños, sincronizar ramas con criterio, resolver conflictos sin miedo y automatizar validaciones con hooks. Con ese flujo, Git deja de ser una fuente de fricción y se convierte en una herramienta de control real sobre el código.
