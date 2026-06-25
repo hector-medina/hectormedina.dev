@@ -1,0 +1,669 @@
+---
+title: "Git III: recuperación, limpieza de historial, hooks y prácticas senior"
+description: "Tercera parte de la guía profesional de Git: deshacer cambios, reflog, stash, cherry-pick, bisect, tags, hooks, seguridad, LFS, submodules y CI/CD."
+pubDate: "2025-11-16"
+category: "DevOps"
+tags: ["git", "advanced-git", "hooks", "releases", "security"]
+---
+
+Un uso profesional de Git no se mide por hacer commits rápido. Se mide cuando algo sale mal: hiciste commit en la rama equivocada, perdiste una rama, subiste un secreto, necesitas encontrar el commit que rompió producción o quieres limpiar una historia antes de compartirla.
+
+Esta tercera parte cubre herramientas de recuperación, mantenimiento y criterio senior. No necesitas usar todo cada día, pero sí debes saber que existe y cuándo aplicarlo.
+
+## Deshacer cambios: el mapa mental
+
+Antes de ejecutar comandos destructivos, pregunta:
+
+```text
+¿Quiero deshacer cambios no commiteados?
+¿Quiero sacar algo del staging?
+¿Quiero deshacer un commit publicado?
+¿Quiero reescribir historia local?
+¿Quiero borrar cambios definitivamente?
+```
+
+Cada respuesta usa una herramienta distinta.
+
+## `git restore`
+
+Descartar cambios no preparados de un archivo:
+
+```bash
+git restore src/users.js
+```
+
+Sacar un archivo del staging area sin perder el cambio:
+
+```bash
+git restore --staged src/users.js
+```
+
+Restaurar un archivo desde otro commit:
+
+```bash
+git restore --source=HEAD~1 src/users.js
+```
+
+`restore` trabaja sobre archivos. Es más claro que usar `checkout` para todo.
+
+## `git revert`
+
+`revert` crea un commit nuevo que deshace otro commit.
+
+```bash
+git revert <hash>
+```
+
+Es la opción segura para historia compartida.
+
+Ejemplo:
+
+```bash
+git revert a1b2c3d
+git push
+```
+
+Ventaja: no borra historia. Cualquiera que ya tenga el commit original puede sincronizar sin problemas.
+
+Úsalo para:
+
+- revertir bugs en `main`,
+- deshacer cambios ya publicados,
+- dejar trazabilidad clara.
+
+## `git reset`
+
+`reset` mueve una rama. Puede afectar staging area y working tree.
+
+Deshacer último commit manteniendo cambios staged:
+
+```bash
+git reset --soft HEAD~1
+```
+
+Deshacer último commit dejando cambios en working tree:
+
+```bash
+git reset --mixed HEAD~1
+```
+
+Deshacer último commit y borrar cambios:
+
+```bash
+git reset --hard HEAD~1
+```
+
+Resumen:
+
+| Comando | Mueve commit | Toca staging | Toca archivos |
+| --- | --- | --- | --- |
+| `reset --soft` | sí | no | no |
+| `reset --mixed` | sí | sí | no |
+| `reset --hard` | sí | sí | sí |
+
+`reset --hard` es útil, pero peligroso. Si no estás seguro, crea una rama de rescate antes:
+
+```bash
+git branch rescue/antes-del-reset
+```
+
+## Reflog: la red de seguridad
+
+`reflog` registra movimientos recientes de `HEAD` y ramas locales.
+
+```bash
+git reflog
+```
+
+Ejemplo de salida:
+
+```text
+abc1234 HEAD@{0}: reset: moving to HEAD~1
+def5678 HEAD@{1}: commit: feat: agrega pagos
+```
+
+Recuperar un commit:
+
+```bash
+git switch -c rescue/pagos def5678
+```
+
+Recuperar una rama borrada:
+
+```bash
+git reflog
+git switch -c feature/perdida <hash>
+```
+
+Regla profesional: cuando recuperes algo, crea una rama nueva. No muevas `main` a ciegas.
+
+## Stash
+
+`stash` guarda cambios no commiteados temporalmente.
+
+```bash
+git stash push -m "wip: validacion parcial de email"
+```
+
+Listar:
+
+```bash
+git stash list
+```
+
+Aplicar y borrar el stash:
+
+```bash
+git stash pop
+```
+
+Aplicar sin borrar:
+
+```bash
+git stash apply stash@{0}
+```
+
+Borrar:
+
+```bash
+git stash drop stash@{0}
+```
+
+Crear rama desde un stash:
+
+```bash
+git stash branch feature/continuar-validacion stash@{0}
+```
+
+Usa stash para cambios temporales. Si algo tiene valor, crea una rama y haz commit.
+
+## Cherry-pick
+
+`cherry-pick` aplica un commit concreto sobre tu rama actual.
+
+```bash
+git cherry-pick <hash>
+```
+
+Casos reales:
+
+- traer un hotfix de `main` a una rama de release,
+- aplicar un commit pequeño sin mergear toda la rama,
+- recuperar una corrección desde otra línea de trabajo.
+
+Ejemplo:
+
+```bash
+git switch release/1.2
+git cherry-pick a1b2c3d
+```
+
+Si hay conflictos:
+
+```bash
+git status
+# resolver
+git add archivo
+git cherry-pick --continue
+```
+
+Abortar:
+
+```bash
+git cherry-pick --abort
+```
+
+No abuses. Si necesitas muchos cherry-picks, quizá el flujo de ramas está mal diseñado.
+
+## Bisect
+
+`git bisect` encuentra el commit que introdujo un bug mediante búsqueda binaria.
+
+Empieza:
+
+```bash
+git bisect start
+git bisect bad
+git bisect good v1.2.0
+```
+
+Git hará checkout de commits intermedios. Tú pruebas y marcas:
+
+```bash
+git bisect good
+```
+
+o:
+
+```bash
+git bisect bad
+```
+
+Al final dirá qué commit introdujo el fallo.
+
+Terminar:
+
+```bash
+git bisect reset
+```
+
+Automatizar con tests:
+
+```bash
+git bisect start
+git bisect bad
+git bisect good v1.2.0
+git bisect run npm test
+```
+
+Esto es una de las herramientas más infravaloradas de Git.
+
+## Tags y releases
+
+Un tag marca un commit concreto.
+
+Tag ligero:
+
+```bash
+git tag v1.0.0
+```
+
+Tag anotado:
+
+```bash
+git tag -a v1.0.0 -m "release: version 1.0.0"
+```
+
+Para releases, prefiere tags anotados.
+
+Subir tag:
+
+```bash
+git push origin v1.0.0
+```
+
+Subir todos:
+
+```bash
+git push origin --tags
+```
+
+Eliminar local:
+
+```bash
+git tag -d v1.0.0
+```
+
+Eliminar remoto:
+
+```bash
+git push origin --delete v1.0.0
+```
+
+Versionado semántico:
+
+```text
+MAJOR.MINOR.PATCH
+```
+
+Ejemplos:
+
+- `v1.0.0`: primera versión estable.
+- `v1.1.0`: funcionalidad compatible.
+- `v1.1.1`: fix compatible.
+- `v2.0.0`: cambio incompatible.
+
+## Hooks
+
+Los hooks son scripts que Git ejecuta en momentos concretos.
+
+Por defecto viven en:
+
+```text
+.git/hooks/
+```
+
+Esa carpeta no se versiona. Para compartir hooks:
+
+```bash
+mkdir .githooks
+git config core.hooksPath .githooks
+```
+
+### `pre-commit`
+
+`.githooks/pre-commit`:
+
+```bash
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+npm run lint
+npm test
+```
+
+Permisos:
+
+```bash
+chmod +x .githooks/pre-commit
+```
+
+### `commit-msg`
+
+Valida mensajes:
+
+```bash
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+message_file="$1"
+message="$(cat "$message_file")"
+pattern='^(feat|fix|docs|test|refactor|chore|ci|build|perf|style)(\(.+\))?: .+'
+
+if ! printf '%s' "$message" | grep -Eq "$pattern"; then
+  printf 'Invalid commit message\n' >&2
+  printf 'Use: type: summary\n' >&2
+  exit 1
+fi
+```
+
+### `pre-push`
+
+Útil para checks más caros:
+
+```bash
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+npm test
+npm run build
+```
+
+Regla:
+
+- `pre-commit`: rápido.
+- `commit-msg`: convención.
+- `pre-push`: más completo.
+- CI: fuente final de verdad.
+
+Los hooks locales ayudan, pero no sustituyen CI.
+
+## Seguridad
+
+Nunca commitees:
+
+- `.env`,
+- claves privadas,
+- tokens,
+- certificados,
+- dumps de bases de datos,
+- credenciales cloud,
+- archivos con datos personales.
+
+Si subiste un secreto:
+
+1. Revoca o rota el secreto.
+2. Elimínalo del código.
+3. Limpia el historial si es necesario.
+4. Fuerza actualización coordinada.
+5. Revisa logs y accesos.
+
+No basta con un commit que borra el archivo. El secreto sigue en commits anteriores.
+
+Buscar secretos básicos:
+
+```bash
+git grep -n "AWS_SECRET"
+git grep -n "BEGIN PRIVATE KEY"
+```
+
+Herramientas como `gitleaks` o `trufflehog` pueden automatizar esta revisión.
+
+## Firmar commits
+
+Firmar commits ayuda a verificar autoría.
+
+Ver configuración:
+
+```bash
+git config --global commit.gpgsign
+```
+
+Configurar firma depende de si usas GPG o SSH signing. En equipos con requisitos de cumplimiento, documenta el método y aplícalo en ramas protegidas.
+
+## `.gitattributes`
+
+`.gitattributes` controla cómo Git trata archivos concretos.
+
+Ejemplo para finales de línea:
+
+```gitattributes
+* text=auto
+*.sh text eol=lf
+*.bat text eol=crlf
+```
+
+Marcar archivos generados para reducir ruido en diffs:
+
+```gitattributes
+package-lock.json linguist-generated=true
+```
+
+Definir estrategia para archivos donde casi siempre quieres una versión:
+
+```gitattributes
+schema.lock merge=ours
+```
+
+Úsalo con cuidado. Una mala regla puede ocultar conflictos importantes.
+
+## Git LFS
+
+Git no está pensado para binarios grandes que cambian mucho.
+
+Git LFS guarda punteros en Git y archivos grandes fuera del repositorio normal.
+
+Instalar:
+
+```bash
+git lfs install
+```
+
+Rastrear tipos:
+
+```bash
+git lfs track "*.psd"
+git lfs track "*.zip"
+```
+
+Esto modifica `.gitattributes`:
+
+```bash
+git add .gitattributes
+git commit -m "chore: configura git lfs"
+```
+
+Usa LFS para binarios necesarios. No lo uses como almacén general de artefactos de build.
+
+## Submodules
+
+Un submodule es un repositorio dentro de otro repositorio.
+
+Añadir:
+
+```bash
+git submodule add git@github.com:empresa/lib-compartida.git vendor/lib-compartida
+```
+
+Clonar con submodules:
+
+```bash
+git clone --recurse-submodules git@github.com:empresa/app.git
+```
+
+Inicializar después:
+
+```bash
+git submodule update --init --recursive
+```
+
+Submodules resuelven un problema real, pero añaden fricción. Antes de usarlos, considera:
+
+- paquete versionado,
+- monorepo,
+- vendoring simple,
+- subtree.
+
+Si tu equipo no entiende submodules, se convertirán en una fuente constante de errores.
+
+## Git en CI/CD
+
+Git suele ser la fuente de verdad para pipelines.
+
+Patrones comunes:
+
+- PR abre checks de CI.
+- Push a `main` despliega staging.
+- Tag `v*.*.*` crea release.
+- Rama protegida exige aprobación.
+- Conventional Commits genera changelog.
+
+Ejemplo conceptual:
+
+```text
+feature branch -> pull request -> checks -> review -> merge -> main -> deploy
+```
+
+Release por tag:
+
+```bash
+git tag -a v1.4.0 -m "release: version 1.4.0"
+git push origin v1.4.0
+```
+
+Buenas prácticas:
+
+- protege `main`,
+- exige checks,
+- no despliegues producción desde ramas arbitrarias,
+- usa tags para releases,
+- evita pipelines que dependan del estado local de una persona.
+
+## Flujos profesionales
+
+### Feature branches
+
+Cada cambio vive en una rama y se integra por PR.
+
+Bueno para equipos que necesitan review clara.
+
+### Trunk-based development
+
+Ramas cortas, integración frecuente en `main`, feature flags cuando hace falta.
+
+Bueno para equipos con CI fuerte y despliegues frecuentes.
+
+### Git Flow
+
+Ramas largas como `develop`, `release`, `hotfix`.
+
+Puede servir en productos con releases menos frecuentes, pero suele ser pesado para equipos que despliegan continuamente.
+
+No adoptes un flujo por moda. Adóptalo porque encaja con cómo entregas software.
+
+## Errores comunes y salidas
+
+### Commiteé en la rama incorrecta
+
+Si aún no hiciste push:
+
+```bash
+git branch feature/cambio-correcto
+git reset --hard HEAD~1
+git switch feature/cambio-correcto
+```
+
+Otra forma:
+
+```bash
+git switch -c feature/cambio-correcto
+```
+
+y luego vuelves a la rama original para limpiarla.
+
+### Quiero quitar un archivo del último commit
+
+```bash
+git restore --staged archivo
+git commit --amend
+```
+
+Si el archivo sigue en el commit, haz:
+
+```bash
+git rm --cached archivo
+git commit --amend
+```
+
+### Perdí commits con reset
+
+```bash
+git reflog
+git switch -c rescue/commits-perdidos <hash>
+```
+
+### Mi rama tiene commits de prueba
+
+```bash
+git rebase -i origin/main
+```
+
+Usa `fixup` o `squash`.
+
+### Quiero deshacer un commit publicado
+
+```bash
+git revert <hash>
+git push
+```
+
+## Checklist senior
+
+- Sé explicar la diferencia entre `restore`, `reset` y `revert`.
+- Antes de comandos destructivos, creo una rama de rescate.
+- Uso `reflog` para recuperar historia local.
+- Uso `rebase -i` para limpiar ruido antes del PR.
+- Uso `--force-with-lease`, no `--force`.
+- No commiteo secretos.
+- Los hooks ayudan, pero CI valida.
+- Los tags de release son claros.
+- Las ramas son pequeñas y de vida corta.
+- El historial cuenta una historia útil.
+
+## Glosario
+
+**Reflog**: registro local de movimientos de referencias.
+
+**Reset**: mueve una rama y opcionalmente cambia staging y working tree.
+
+**Revert**: crea un commit que deshace otro commit.
+
+**Restore**: restaura archivos o staging.
+
+**Stash**: almacenamiento temporal de cambios no commiteados.
+
+**Cherry-pick**: aplica un commit concreto sobre otra rama.
+
+**Bisect**: búsqueda binaria para encontrar el commit que introdujo un fallo.
+
+**Tag**: referencia fija a un commit.
+
+**Hook**: script ejecutado por Git en un evento concreto.
+
+**LFS**: extensión para manejar archivos grandes.
+
+**Submodule**: repositorio Git anidado dentro de otro.
+
+## Cierre
+
+El nivel senior en Git no consiste en usar comandos raros. Consiste en saber qué historia estás construyendo, cómo recuperarte cuando algo falla y cuándo una herramienta es más segura que otra. `revert` protege historia compartida, `reset` limpia historia local, `reflog` recupera errores, `bisect` encuentra regresiones, los hooks reducen fallos repetitivos y CI protege al equipo. Git se vuelve potente cuando lo usas con criterio, no con prisa.

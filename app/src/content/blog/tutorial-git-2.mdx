@@ -1,0 +1,675 @@
+---
+title: "Git II: colaboración real con ramas, remotos, merge, rebase y conflictos"
+description: "Segunda parte de la guía profesional de Git: ramas, sincronización, múltiples remotos, forks, merge, rebase, conflictos y pull requests."
+pubDate: "2025-10-03"
+category: "DevOps"
+tags: ["git", "branches", "remotes", "rebase", "merge"]
+---
+
+La primera parte cubría el trabajo individual: entender el repositorio, preparar commits y subir cambios. Esta segunda parte entra en el terreno donde Git empieza a importar de verdad: colaborar con otras personas sin pisarse.
+
+Aquí vamos a trabajar con ramas, remotos, forks, múltiples repositorios remotos, merge, rebase, conflictos y pull requests. El objetivo es que puedas moverte en un equipo con criterio, no solo copiar comandos.
+
+## Ramas: trabajar sin bloquear a nadie
+
+Una rama es un puntero móvil a un commit. Crear una rama no copia el proyecto entero; solo crea una nueva referencia.
+
+Ver ramas:
+
+```bash
+git branch
+```
+
+Crear y cambiar a una rama:
+
+```bash
+git switch -c feature/validacion-email
+```
+
+Cambiar de rama:
+
+```bash
+git switch main
+git switch feature/validacion-email
+```
+
+Borrar una rama ya mergeada:
+
+```bash
+git branch -d feature/validacion-email
+```
+
+Forzar borrado de una rama local:
+
+```bash
+git branch -D feature/validacion-email
+```
+
+Usa `-D` con cuidado. Si la rama contiene commits no integrados, puedes perder la referencia directa a ellos. No siempre pierdes los commits para siempre, pero sí te complicas la vida.
+
+## Nombres de ramas
+
+Nombres útiles:
+
+```text
+feature/login-oauth
+fix/token-expirado
+hotfix/error-produccion
+chore/actualiza-node
+docs/guia-instalacion
+```
+
+Nombres pobres:
+
+```text
+cambios
+test
+hector
+rama2
+final
+```
+
+Una rama debería comunicar intención. Si alguien ve el nombre en un PR, debería entender de qué va antes de abrir el diff.
+
+## Ramas locales y remotas
+
+Tu rama local:
+
+```text
+feature/validacion-email
+```
+
+La referencia remota:
+
+```text
+origin/feature/validacion-email
+```
+
+Listar ambas:
+
+```bash
+git branch -a
+```
+
+Subir una rama nueva:
+
+```bash
+git push -u origin feature/validacion-email
+```
+
+Eliminar rama remota:
+
+```bash
+git push origin --delete feature/validacion-email
+```
+
+Limpiar referencias remotas que ya no existen:
+
+```bash
+git fetch --prune
+```
+
+## `fetch` vs `pull`
+
+`fetch` descarga información del remoto, pero no modifica tu rama actual:
+
+```bash
+git fetch origin
+```
+
+Después puedes inspeccionar:
+
+```bash
+git log --oneline --graph --decorate --all
+```
+
+`pull` descarga e integra:
+
+```bash
+git pull
+```
+
+Conceptualmente:
+
+```bash
+git fetch
+git merge
+```
+
+o, si tu equipo usa rebase:
+
+```bash
+git fetch
+git rebase
+```
+
+Consejo profesional: cuando estés investigando, usa `fetch`. Cuando tengas claro que quieres actualizar tu rama, usa `pull` o integra manualmente.
+
+## Upstream branches
+
+Una rama local puede estar conectada a una rama remota.
+
+Ver upstream:
+
+```bash
+git branch -vv
+```
+
+Configurar upstream:
+
+```bash
+git push -u origin feature/validacion-email
+```
+
+O manualmente:
+
+```bash
+git branch --set-upstream-to=origin/feature/validacion-email
+```
+
+Esto permite usar:
+
+```bash
+git pull
+git push
+```
+
+sin repetir remoto y rama.
+
+## Múltiples remotos
+
+Un repositorio local puede tener más de un remoto. Esto es normal en proyectos profesionales.
+
+Casos reales:
+
+- trabajas desde un fork,
+- sincronizas con el repositorio original,
+- migras de GitLab a GitHub,
+- mantienes un mirror interno,
+- publicas código en dos plataformas,
+- separas un remoto de lectura y otro de escritura.
+
+Ver remotos:
+
+```bash
+git remote -v
+```
+
+Ejemplo típico con fork:
+
+```text
+origin    git@github.com:tu-usuario/proyecto.git
+upstream  git@github.com:empresa/proyecto.git
+```
+
+`origin` suele ser tu fork. `upstream` suele ser el repositorio original.
+
+Añadir `upstream`:
+
+```bash
+git remote add upstream git@github.com:empresa/proyecto.git
+git remote -v
+```
+
+Traer cambios del repo original:
+
+```bash
+git fetch upstream
+```
+
+Actualizar tu `main` local con el `main` original:
+
+```bash
+git switch main
+git merge --ff-only upstream/main
+```
+
+Subir tu `main` actualizado a tu fork:
+
+```bash
+git push origin main
+```
+
+Flujo completo en fork:
+
+```bash
+git fetch upstream
+git switch main
+git merge --ff-only upstream/main
+git push origin main
+git switch -c feature/mejora-api
+```
+
+Por qué `--ff-only`: evita crear un merge commit accidental al sincronizar tu `main` con el original.
+
+## GitHub y GitLab a la vez
+
+Puedes tener dos remotos independientes:
+
+```bash
+git remote add github git@github.com:usuario/proyecto.git
+git remote add gitlab git@gitlab.com:usuario/proyecto.git
+```
+
+Subir a GitHub:
+
+```bash
+git push github main
+```
+
+Subir a GitLab:
+
+```bash
+git push gitlab main
+```
+
+Traer de GitLab:
+
+```bash
+git fetch gitlab
+```
+
+Esto resuelve migraciones, mirrors manuales o repositorios mantenidos en dos plataformas.
+
+## Cambiar, renombrar y eliminar remotos
+
+Cambiar URL:
+
+```bash
+git remote set-url origin git@github.com:empresa/nuevo-repo.git
+```
+
+Renombrar:
+
+```bash
+git remote rename origin github
+```
+
+Eliminar:
+
+```bash
+git remote remove upstream
+```
+
+Ver una configuración concreta:
+
+```bash
+git remote show origin
+```
+
+## Un remoto con varias URLs de push
+
+También puedes hacer que un remoto pushee a más de una URL.
+
+```bash
+git remote set-url origin git@github.com:usuario/proyecto.git
+git remote set-url --add --push origin git@github.com:usuario/proyecto.git
+git remote set-url --add --push origin git@gitlab.com:usuario/proyecto.git
+```
+
+Entonces:
+
+```bash
+git push origin main
+```
+
+intentará subir a ambas URLs de push.
+
+Úsalo con criterio. Para migraciones o mirrors puede ser cómodo. Para trabajo diario puede ocultar demasiado y hacer más difícil entender dónde estás publicando.
+
+## Merge
+
+Merge integra dos líneas de trabajo.
+
+Ejemplo:
+
+```bash
+git switch main
+git pull
+git merge feature/validacion-email
+```
+
+Si `main` puede avanzar directamente, Git hace un **fast-forward**:
+
+```text
+A---B---C feature
+     \
+      main
+```
+
+después:
+
+```text
+A---B---C main, feature
+```
+
+Si las ramas divergieron, Git crea un merge commit:
+
+```text
+A---B---C main
+     \
+      D---E feature
+```
+
+después:
+
+```text
+A---B---C---M main
+     \     /
+      D---E feature
+```
+
+Forzar merge commit:
+
+```bash
+git merge --no-ff feature/validacion-email
+```
+
+Abortar un merge:
+
+```bash
+git merge --abort
+```
+
+## Rebase
+
+Rebase toma tus commits y los reaplica sobre otra base.
+
+Actualizar una rama de feature sobre `main`:
+
+```bash
+git switch feature/validacion-email
+git fetch origin
+git rebase origin/main
+```
+
+Antes:
+
+```text
+A---B---C main
+     \
+      D---E feature
+```
+
+Después:
+
+```text
+A---B---C main
+         \
+          D'---E' feature
+```
+
+Los commits `D` y `E` se recrean como `D'` y `E'`. Por eso rebase reescribe historia.
+
+Reglas:
+
+- Rebase en ramas propias: bien.
+- Rebase antes de abrir PR: suele ser útil.
+- Rebase de ramas compartidas: solo con acuerdo.
+- Rebase de `main` pública: mala idea.
+
+Si hay conflictos:
+
+```bash
+git status
+# resolver archivos
+git add archivo
+git rebase --continue
+```
+
+Abortar:
+
+```bash
+git rebase --abort
+```
+
+Si ya habías subido la rama y haces rebase:
+
+```bash
+git push --force-with-lease
+```
+
+Usa `--force-with-lease`, no `--force`. Protege contra sobrescribir commits remotos que no tienes en local.
+
+## Rebase interactivo
+
+Sirve para limpiar commits antes de compartirlos:
+
+```bash
+git rebase -i origin/main
+```
+
+Acciones habituales:
+
+```text
+pick    usar commit
+reword  cambiar mensaje
+edit    parar para editar
+squash  combinar con el anterior
+fixup   combinar descartando mensaje
+drop    eliminar commit
+```
+
+Caso típico:
+
+```text
+pick 1111111 feat: agrega validación de email
+fixup 2222222 fix typo
+fixup 3333333 arregla test
+```
+
+Resultado: un commit limpio.
+
+No uses rebase interactivo para esconder decisiones importantes. Úsalo para quitar ruido antes de pedir revisión.
+
+## Conflictos
+
+Un conflicto ocurre cuando Git no puede decidir cómo combinar cambios.
+
+Ejemplo:
+
+```text
+<<<<<<< HEAD
+return "Hola";
+=======
+return "Hello";
+>>>>>>> feature/i18n
+```
+
+Debes editar el archivo y dejar el resultado final:
+
+```javascript
+return translate("hello");
+```
+
+Luego:
+
+```bash
+git add src/messages.js
+```
+
+Si era merge:
+
+```bash
+git commit
+```
+
+Si era rebase:
+
+```bash
+git rebase --continue
+```
+
+## Cómo resolver conflictos con criterio
+
+No resuelvas pensando "mi cambio contra tu cambio". Resuelve pensando en el comportamiento correcto del sistema.
+
+Pasos:
+
+```bash
+git status
+```
+
+Abre cada archivo en conflicto.
+
+Busca contexto:
+
+```bash
+git log --merge --oneline
+git diff
+```
+
+Resuelve, ejecuta tests y continúa.
+
+Si te equivocaste durante un merge:
+
+```bash
+git merge --abort
+```
+
+Si te equivocaste durante un rebase:
+
+```bash
+git rebase --abort
+```
+
+## Pull requests
+
+Un pull request no es solo una solicitud de merge. Es una unidad de revisión.
+
+Un buen PR:
+
+- tiene un objetivo claro,
+- tiene pocos archivos,
+- separa refactor de cambio funcional,
+- incluye tests cuando corresponde,
+- explica el contexto,
+- anticipa riesgos.
+
+Antes de abrirlo:
+
+```bash
+git status
+git fetch origin
+git rebase origin/main
+git log --oneline --graph --decorate --all -n 20
+git diff origin/main...HEAD
+```
+
+El último comando muestra lo que realmente entrará en el PR.
+
+## Estrategias de integración
+
+### Merge commit
+
+Conserva la historia de la rama.
+
+Bueno cuando quieres ver agrupaciones de trabajo completas.
+
+### Squash merge
+
+Combina todos los commits del PR en uno.
+
+Bueno para mantener `main` limpio si los commits intermedios no aportan valor.
+
+### Rebase and merge
+
+Reaplica commits individuales sobre `main`.
+
+Bueno si cada commit está bien construido y quieres historial lineal.
+
+No hay una opción universal. Lo profesional es tener una convención de equipo y aplicarla de forma consistente.
+
+## Flujo recomendado de colaboración
+
+```bash
+git switch main
+git fetch origin
+git merge --ff-only origin/main
+
+git switch -c feature/validacion-email
+
+# editar código
+
+git status
+git diff
+git add -p
+git commit -m "fix: valida email antes de crear usuario"
+
+git fetch origin
+git rebase origin/main
+git push -u origin feature/validacion-email
+```
+
+Después abres PR.
+
+Si durante el rebase hay conflictos, los resuelves antes de pedir revisión.
+
+## Errores comunes en equipo
+
+### Trabajar directamente en `main`
+
+Evítalo salvo cambios triviales y política explícita.
+
+### No actualizar antes del PR
+
+Puede producir conflictos tardíos.
+
+### Hacer PRs gigantes
+
+Divide por intención. Un PR grande tarda más en revisarse y acumula más conflictos.
+
+### Usar `git pull` sin entender la estrategia
+
+Configura el comportamiento del equipo:
+
+```bash
+git config --global pull.rebase true
+```
+
+o:
+
+```bash
+git config --global pull.rebase false
+```
+
+Lo importante es no mezclar estilos sin acuerdo.
+
+### Hacer force push sin lease
+
+Usa:
+
+```bash
+git push --force-with-lease
+```
+
+## Checklist antes de abrir un PR
+
+- La rama parte de `main` actualizado.
+- El diff contra `origin/main` está revisado.
+- Los commits son comprensibles.
+- No hay cambios mezclados sin relación.
+- Los tests relevantes pasan.
+- No hay secretos.
+- No hay archivos generados innecesarios.
+- El PR explica qué cambia y por qué.
+- Si hubo conflictos, el resultado fue probado.
+
+## Glosario
+
+**Remote-tracking branch**: referencia local que representa el estado conocido de una rama remota, como `origin/main`.
+
+**Upstream**: rama remota asociada a una rama local.
+
+**Fast-forward**: integración donde la rama destino solo avanza el puntero.
+
+**Merge commit**: commit con dos o más padres.
+
+**Rebase**: operación que reaplica commits sobre otra base.
+
+**Fork**: copia de un repositorio en otra cuenta o espacio.
+
+**Upstream remote**: remoto que apunta al repositorio original.
+
+**Pull request**: propuesta de integración y revisión de cambios.
+
