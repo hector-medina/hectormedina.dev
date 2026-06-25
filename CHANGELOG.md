@@ -1,3 +1,12 @@
+## 1.2.0 (2026-06-25)
+
+* Merge pull request #3 from hector-medina/feat/add-blog-git ([dc00b6a](https://github.com/hector-medina/hectormedina.dev/commit/dc00b6a)), closes [#3](https://github.com/hector-medina/hectormedina.dev/issues/3)
+* Update tutorial-git-1.mdx ([2c049eb](https://github.com/hector-medina/hectormedina.dev/commit/2c049eb))
+* Update tutorial-git-1.mdx ([9a2a89b](https://github.com/hector-medina/hectormedina.dev/commit/9a2a89b))
+* Update tutorial-git-2.mdx ([285bed1](https://github.com/hector-medina/hectormedina.dev/commit/285bed1))
+* feat(blog): add git blogs ([fd94e16](https://github.com/hector-medina/hectormedina.dev/commit/fd94e16))
+* feat(blog): add git tutorial ([949a3df](https://github.com/hector-medina/hectormedina.dev/commit/949a3df))
+
 ## 1.1.0 (2025-10-25)
 
 * Add GitHub Actions workflow for deploying Astro ([1a470fc](https://github.com/hector-medina/hectormedina.dev/commit/1a470fc))
