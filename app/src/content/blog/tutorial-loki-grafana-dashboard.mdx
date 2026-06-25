@@ -1,0 +1,537 @@
+---
+title: "Loki con Grafana: logs, LogQL y dashboard práctico"
+description: "Una guía práctica para montar Loki con Grafana y Alloy, enviar logs estructurados, consultar con LogQL, crear alertas e importar un dashboard operativo."
+pubDate: "2026-06-07"
+category: "Observabilidad"
+tags: ["loki", "grafana", "logs", "observability", "logql"]
+---
+
+Loki es el sistema de logs de Grafana Labs. A diferencia de muchas soluciones de logging, no indexa el contenido completo del log: indexa labels y almacena el texto del log de forma eficiente. Eso lo hace especialmente útil para logs operativos, debugging y correlación con métricas y trazas.
+
+Este tutorial es práctico: vas a levantar Loki, Grafana y Grafana Alloy con Docker Compose; vas a enviar logs estructurados; vas a consultar con LogQL; vas a crear alertas; y vas a importar un dashboard de Grafana listo para usar.
+
+Dashboard incluido:
+
+- [Descargar dashboard Loki Logs Overview](/assets/grafana-dashboards/loki-logs-overview.json)
+
+## Modelo mental
+
+El flujo de Loki es:
+
+```text
+aplicaciones escriben logs
+collector lee logs
+collector añade labels
+collector envía a Loki
+Loki almacena streams
+Grafana consulta con LogQL
+dashboards y alertas usan esas consultas
+```
+
+Piezas principales:
+
+- **Log line**: línea individual de log.
+- **Stream**: conjunto de líneas con el mismo set de labels.
+- **Label**: dimensión indexada, como `service_name`, `environment` o `level`.
+- **Collector**: agente que lee logs y los envía a Loki. En el stack moderno de Grafana, usa Alloy.
+- **LogQL**: lenguaje de consulta de Loki.
+- **Parser**: etapa de consulta o pipeline que extrae campos, como `json`, `logfmt` o `regexp`.
+- **Dashboard**: visualización en Grafana basada en queries LogQL.
+
+Regla clave: en Loki, los labels son poderosos pero peligrosos. No pongas valores de alta cardinalidad como `request_id`, `user_id`, `email` o `trace_id` como labels. Déjalos dentro del log y extráelos en consulta cuando haga falta.
+
+## Stack local con Docker Compose
+
+Estructura:
+
+```text
+observability-logs/
+  compose.yml
+  loki/
+    loki.yml
+  alloy/
+    config.alloy
+  grafana/
+    provisioning/
+      datasources/
+        loki.yml
+      dashboards/
+        dashboards.yml
+    dashboards/
+      loki-logs-overview.json
+  logs/
+    app.log
+```
+
+`compose.yml`:
+
+```yaml
+services:
+  loki:
+    image: grafana/loki:latest
+    command: ["-config.file=/etc/loki/loki.yml"]
+    ports:
+      - "3100:3100"
+    volumes:
+      - ./loki/loki.yml:/etc/loki/loki.yml:ro
+      - loki_data:/loki
+
+  alloy:
+    image: grafana/alloy:latest
+    command:
+      - run
+      - /etc/alloy/config.alloy
+      - --server.http.listen-addr=0.0.0.0:12345
+    ports:
+      - "12345:12345"
+    volumes:
+      - ./alloy/config.alloy:/etc/alloy/config.alloy:ro
+      - ./logs:/var/log/tutorial:ro
+    depends_on:
+      - loki
+
+  grafana:
+    image: grafana/grafana:latest
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+    depends_on:
+      - loki
+
+volumes:
+  loki_data:
+  grafana_data:
+```
+
+Levantar:
+
+```bash
+docker compose up -d
+```
+
+URLs:
+
+```text
+Loki:    http://localhost:3100
+Alloy:   http://localhost:12345
+Grafana: http://localhost:3000
+```
+
+## Configurar Loki
+
+`loki/loki.yml`:
+
+```yaml
+auth_enabled: false
+
+server:
+  http_listen_port: 3100
+
+common:
+  path_prefix: /loki
+  replication_factor: 1
+  ring:
+    kvstore:
+      store: inmemory
+  storage:
+    filesystem:
+      chunks_directory: /loki/chunks
+      rules_directory: /loki/rules
+
+schema_config:
+  configs:
+    - from: 2024-04-01
+      store: tsdb
+      object_store: filesystem
+      schema: v13
+      index:
+        prefix: index_
+        period: 24h
+
+limits_config:
+  allow_structured_metadata: true
+  reject_old_samples: true
+  reject_old_samples_max_age: 168h
+```
+
+Esta configuración es local y didáctica. Para producción necesitas almacenamiento de objetos, límites revisados, autenticación o gateway, retención, multi-tenancy si aplica y estrategia de backup.
+
+## Enviar logs con Grafana Alloy
+
+`alloy/config.alloy`:
+
+```river
+local.file_match "tutorial_logs" {
+  path_targets = [
+    {
+      "__path__" = "/var/log/tutorial/*.log",
+      "service_name" = "demo-api",
+      "environment" = "local",
+    },
+  ]
+}
+
+loki.source.file "tutorial_logs" {
+  targets = local.file_match.tutorial_logs.targets
+  forward_to = [loki.process.tutorial_logs.receiver]
+}
+
+loki.process "tutorial_logs" {
+  stage.json {
+    expressions = {
+      level = "level",
+      message = "message",
+      trace_id = "trace_id",
+    }
+  }
+
+  stage.labels {
+    values = {
+      level = "level",
+    }
+  }
+
+  forward_to = [loki.write.default.receiver]
+}
+
+loki.write "default" {
+  endpoint {
+    url = "http://loki:3100/loki/api/v1/push"
+  }
+}
+```
+
+Puntos importantes:
+
+- `service_name` y `environment` son labels de baja cardinalidad.
+- `level` puede ser label si el set está controlado: `debug`, `info`, `warn`, `error`.
+- `trace_id` se extrae pero no se convierte en label.
+- Alloy envía los logs a Loki por HTTP.
+
+## Generar logs de ejemplo
+
+Crea el directorio:
+
+```bash
+mkdir -p logs
+```
+
+Escribe logs JSON:
+
+```bash
+cat >> logs/app.log <<'EOF'
+{"ts":"2026-06-23T10:00:00Z","level":"info","message":"server started","trace_id":"abc001","route":"/health","status":200}
+{"ts":"2026-06-23T10:00:05Z","level":"warn","message":"slow request","trace_id":"abc002","route":"/api/orders","status":200,"duration_ms":950}
+{"ts":"2026-06-23T10:00:10Z","level":"error","message":"database timeout","trace_id":"abc003","route":"/api/orders","status":500,"duration_ms":3000}
+EOF
+```
+
+Ver logs de Alloy:
+
+```bash
+docker compose logs -f alloy
+```
+
+Comprobar labels en Loki:
+
+```bash
+curl -s http://localhost:3100/loki/api/v1/labels
+```
+
+## Provisionar datasource de Grafana
+
+`grafana/provisioning/datasources/loki.yml`:
+
+```yaml
+apiVersion: 1
+
+datasources:
+  - name: Loki
+    uid: loki
+    type: loki
+    access: proxy
+    url: http://loki:3100
+    editable: true
+```
+
+Provisionar dashboards:
+
+`grafana/provisioning/dashboards/dashboards.yml`:
+
+```yaml
+apiVersion: 1
+
+providers:
+  - name: tutorial-dashboards
+    orgId: 1
+    folder: Observabilidad
+    type: file
+    disableDeletion: false
+    editable: true
+    options:
+      path: /var/lib/grafana/dashboards
+```
+
+Copia el dashboard incluido:
+
+```bash
+mkdir -p grafana/dashboards
+cp app/public/assets/grafana-dashboards/loki-logs-overview.json grafana/dashboards/
+```
+
+Importación manual:
+
+- [loki-logs-overview.json](/assets/grafana-dashboards/loki-logs-overview.json)
+
+## LogQL esencial
+
+Consultar logs por servicio:
+
+```logql
+{service_name="demo-api"}
+```
+
+Filtrar texto:
+
+```logql
+{service_name="demo-api"} |= "database"
+```
+
+Regex case-insensitive para errores:
+
+```logql
+{service_name="demo-api"} |~ "(?i)(error|exception|panic|fatal)"
+```
+
+Parsear JSON:
+
+```logql
+{service_name="demo-api"} | json
+```
+
+Filtrar por campo extraído:
+
+```logql
+{service_name="demo-api"} | json | status >= 500
+```
+
+Contar logs por nivel:
+
+```logql
+sum by (level) (count_over_time({service_name="demo-api"} | json | level=~".+" [5m]))
+```
+
+Logs por segundo:
+
+```logql
+sum by (service_name) (rate({service_name=~".+"}[5m]))
+```
+
+Errores por minuto:
+
+```logql
+sum by (service_name) (
+  rate({service_name=~".+"} |~ "(?i)(error|exception|panic|fatal)" [5m])
+)
+```
+
+Extraer duración y calcular p95 si el campo existe:
+
+```logql
+quantile_over_time(
+  0.95,
+  {service_name="demo-api"} | json | unwrap duration_ms [5m]
+)
+```
+
+## Labels: qué sí y qué no
+
+Buenos labels:
+
+```text
+service_name
+environment
+namespace
+cluster
+level
+team
+```
+
+Malos labels:
+
+```text
+request_id
+trace_id
+user_id
+email
+path completo con IDs
+payload hash
+```
+
+Regla práctica: si el valor puede tener miles o millones de combinaciones, no debe ser label. Guárdalo dentro del log y parsea en consulta.
+
+## Alertas con Loki
+
+Puedes alertar sobre errores:
+
+```logql
+sum by (service_name) (
+  count_over_time({service_name=~".+"} |~ "(?i)(error|exception|panic|fatal)" [5m])
+) > 5
+```
+
+También sobre ausencia de logs, útil para workers:
+
+```logql
+absent_over_time({service_name="critical-worker"}[10m])
+```
+
+Alerta sobre crecimiento de warnings:
+
+```logql
+sum by (service_name) (
+  rate({service_name=~".+", level="warn"}[5m])
+) > 1
+```
+
+Buenas prácticas:
+
+- No alertes por cada línea de error.
+- Usa ventanas temporales.
+- Agrupa por servicio.
+- Añade runbook.
+- Revisa si el log es síntoma o causa.
+
+## Dashboard de Grafana incluido
+
+El dashboard creado para este post incluye:
+
+- logs por segundo por servicio,
+- errores en los últimos 5 minutos,
+- top servicios por volumen de logs,
+- panel de logs recientes relevantes,
+- tabla de eventos por nivel y servicio.
+
+Importación:
+
+1. Abre Grafana.
+2. Ve a **Dashboards**.
+3. Pulsa **New** y luego **Import**.
+4. Sube [loki-logs-overview.json](/assets/grafana-dashboards/loki-logs-overview.json).
+5. Selecciona el datasource Loki.
+6. Pulsa **Import**.
+
+Si tus labels no usan `service_name` o `level`, ajusta las queries del dashboard.
+
+## Correlación con trazas
+
+Si tus logs tienen `trace_id`, puedes enlazar desde Loki hacia Tempo en Grafana. La idea es:
+
+```text
+log line contiene trace_id
+Grafana extrae trace_id
+link abre la traza correspondiente en Tempo
+```
+
+Ejemplo de log:
+
+```json
+{"level":"error","message":"database timeout","trace_id":"abc003","route":"/api/orders"}
+```
+
+Recomendación:
+
+- Mantén `trace_id` en el cuerpo del log.
+- No lo conviertas en label.
+- Configura derived fields en el datasource Loki para crear enlaces a Tempo.
+
+## Debugging
+
+Ver estado de Loki:
+
+```bash
+curl -s http://localhost:3100/ready
+```
+
+Ver labels:
+
+```bash
+curl -s http://localhost:3100/loki/api/v1/labels
+```
+
+Consultar por API:
+
+```bash
+curl -G -s "http://localhost:3100/loki/api/v1/query" \
+  --data-urlencode 'query={service_name="demo-api"}'
+```
+
+Ver logs del collector:
+
+```bash
+docker compose logs -f alloy
+```
+
+Ver logs de Loki:
+
+```bash
+docker compose logs -f loki
+```
+
+Problemas frecuentes:
+
+- Alloy no puede leer el path montado.
+- El archivo no recibe nuevas líneas.
+- Los logs no son JSON válido.
+- Se usan labels de alta cardinalidad.
+- La query de Grafana filtra labels inexistentes.
+- Loki está listo pero no recibe streams.
+
+## Checklist profesional
+
+- Los logs son estructurados, idealmente JSON.
+- Los labels son pocos y de baja cardinalidad.
+- El collector está versionado y configurado como código.
+- Los secrets no aparecen en logs.
+- Grafana tiene datasource provisionado.
+- El dashboard está versionado como JSON.
+- Hay alertas basadas en ventanas, no en líneas individuales.
+- Los logs incluyen `trace_id` cuando hay tracing.
+- Retención y almacenamiento están definidos.
+- Las queries caras se revisan antes de ponerlas en dashboards globales.
+
+## Glosario
+
+**Alloy**: collector de Grafana para métricas, logs, trazas y perfiles.
+
+**Loki**: backend de logs de Grafana Labs.
+
+**LogQL**: lenguaje de consulta de Loki.
+
+**Stream**: conjunto de logs con los mismos labels.
+
+**Label**: dimensión indexada usada para seleccionar streams.
+
+**Parser**: etapa que extrae campos del contenido del log.
+
+**Derived field**: campo extraído en Grafana para enlazar logs con otros sistemas, como Tempo.
+
+**Cardinalidad**: número de combinaciones únicas de labels.
+
+## Referencias oficiales
+
+- [Grafana Loki documentation](https://grafana.com/docs/loki/latest/)
+- [Send logs to Loki with Grafana Alloy](https://grafana.com/docs/loki/latest/send-data/alloy/)
+- [LogQL documentation](https://grafana.com/docs/loki/latest/query/)
+- [Loki labels](https://grafana.com/docs/loki/latest/get-started/labels/)
+- [Grafana dashboard JSON model](https://grafana.com/docs/grafana/latest/visualizations/dashboards/build-dashboards/view-dashboard-json-model/)
+
+## Cierre
+
+Loki funciona mejor cuando los logs están estructurados y los labels están diseñados con disciplina. Un buen stack de logs no consiste en indexarlo todo: consiste en conservar contexto útil, controlar cardinalidad, consultar rápido, alertar sobre síntomas accionables y conectar logs con métricas y trazas cuando necesitas investigar incidentes reales.

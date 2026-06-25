@@ -1,0 +1,1374 @@
+---
+title: "Testing en Bash con ShellCheck y Bats: guía práctica profesional"
+description: "Una guía práctica para testear scripts Bash con ShellCheck y Bats: linting, tests unitarios, integración, fixtures, mocks, CI, helpers, cobertura funcional y buenas prácticas."
+pubDate: "2026-04-05"
+category: "DevOps"
+tags: ["bash", "testing", "shellcheck", "bats", "devops"]
+---
+
+Los scripts Bash suelen empezar como automatizaciones pequeñas y terminan ejecutando despliegues, backups, migraciones, tareas de CI/CD o entrypoints de contenedores. Cuando un script toca producción, credenciales, datos o infraestructura, probarlo deja de ser opcional.
+
+Este tutorial es eminentemente práctico: vas a usar **ShellCheck** para análisis estático y **Bats** para tests automatizados de comportamiento. La combinación cubre dos frentes distintos: errores de sintaxis, quoting y portabilidad por un lado; salida, exit status, ficheros, flags, mocks y flujos reales por el otro.
+
+## Modelo mental
+
+Testing en Bash no consiste en aplicar el mismo modelo que usarías en una aplicación grande. Bash se prueba mejor por capas:
+
+- **Syntax check**: `bash -n` detecta errores de parseo.
+- **Static analysis**: ShellCheck detecta patrones peligrosos, quoting incorrecto, variables dudosas y problemas de portabilidad.
+- **Unit tests**: Bats prueba funciones aisladas cuando el script está diseñado para poder importarse.
+- **CLI tests**: Bats ejecuta el script como lo haría una persona o un pipeline.
+- **Integration tests**: Bats valida efectos reales en ficheros, directorios, procesos, comandos externos y exit codes.
+- **CI**: todo se ejecuta en cada pull request.
+
+Regla práctica: ShellCheck no reemplaza tests, y Bats no reemplaza ShellCheck. Uno analiza código; el otro ejecuta comportamiento.
+
+## Estructura recomendada del proyecto
+
+Una estructura simple:
+
+```text
+.
+├── scripts/
+│   ├── backup.sh
+│   └── deploy.sh
+├── test/
+│   ├── backup.bats
+│   ├── deploy.bats
+│   ├── fixtures/
+│   ├── fakes/
+│   └── test_helper/
+│       ├── bats-support/
+│       ├── bats-assert/
+│       ├── bats-file/
+│       └── common.bash
+├── Makefile
+└── .github/
+    └── workflows/
+        └── test-shell.yml
+```
+
+Separación útil:
+
+- `scripts/`: código Bash productivo.
+- `test/*.bats`: tests.
+- `test/fixtures/`: entradas estáticas para pruebas.
+- `test/fakes/`: comandos falsos para simular dependencias externas.
+- `test/test_helper/`: helpers comunes y librerías Bats.
+
+## Instalar herramientas
+
+En macOS con Homebrew:
+
+```bash
+brew install shellcheck bats-core
+```
+
+Con npm para Bats:
+
+```bash
+npm install --save-dev bats
+```
+
+Con Docker para Bats:
+
+```bash
+docker run --rm -it -v "$PWD:/code" bats/bats:latest test
+```
+
+ShellCheck con Docker:
+
+```bash
+docker run --rm -v "$PWD:/mnt" koalaman/shellcheck:stable scripts/*.sh
+```
+
+Verifica instalación:
+
+```bash
+shellcheck --version
+bats --version
+```
+
+Para proyectos profesionales, fija versiones cuando el pipeline sea crítico. Un linter nuevo puede introducir warnings nuevos y romper CI si no controlas la versión.
+
+## Primer nivel: validar sintaxis con Bash
+
+Antes de ShellCheck y Bats, valida que Bash pueda parsear tus scripts.
+
+```bash
+bash -n scripts/backup.sh
+```
+
+Para todos:
+
+```bash
+find scripts -name "*.sh" -type f -print0 | xargs -0 bash -n
+```
+
+Qué detecta:
+
+- comillas sin cerrar,
+- `if` sin `fi`,
+- `case` mal cerrado,
+- llaves o paréntesis incorrectos,
+- errores básicos de sintaxis.
+
+Qué no detecta:
+
+- variables mal citadas,
+- lógica incorrecta,
+- comandos inexistentes,
+- output inesperado,
+- problemas de permisos,
+- efectos sobre ficheros.
+
+`bash -n` es barato y debe ejecutarse siempre.
+
+## ShellCheck: análisis estático serio
+
+Ejecutar ShellCheck:
+
+```bash
+shellcheck scripts/*.sh
+```
+
+Para scripts Bash explícitos:
+
+```bash
+shellcheck --shell=bash scripts/*.sh
+```
+
+Con severidad mínima:
+
+```bash
+shellcheck --severity=warning scripts/*.sh
+```
+
+Siguiendo archivos importados con `source`:
+
+```bash
+shellcheck -x scripts/*.sh
+```
+
+ShellCheck detecta problemas como:
+
+- variables sin comillas,
+- uso inseguro de `for file in $(ls)`,
+- scripts Bash con shebang `sh`,
+- variables no usadas,
+- errores de `[` y `[[`,
+- source de archivos no encontrados,
+- expansión accidental de globs,
+- problemas de portabilidad.
+
+Ejemplo de código problemático:
+
+```bash
+#!/usr/bin/env bash
+
+for file in $(ls *.log); do
+  rm $file
+done
+```
+
+Corrección:
+
+```bash
+#!/usr/bin/env bash
+set -Eeuo pipefail
+shopt -s nullglob
+
+for file in ./*.log; do
+  rm -- "$file"
+done
+```
+
+ShellCheck no solo busca estilo: evita bugs reales con espacios, globs, rutas que empiezan por `-` y comportamientos distintos entre shells.
+
+## Ignorar reglas de ShellCheck con criterio
+
+Si una regla no aplica, documenta la excepción cerca del código.
+
+```bash
+# shellcheck disable=SC1091
+source "$PROJECT_ROOT/scripts/lib.sh"
+```
+
+Ignorar una regla para un comando:
+
+```bash
+# shellcheck disable=SC2086
+docker run $DOCKER_FLAGS "$image"
+```
+
+Antes de desactivar una regla, pregúntate:
+
+- ¿El warning señala un bug real?
+- ¿Puedo reescribir el código de forma más clara?
+- ¿La excepción está documentada?
+- ¿El alcance de la desactivación es mínimo?
+
+No uses:
+
+```bash
+# shellcheck disable=all
+```
+
+Eso elimina el valor de la herramienta.
+
+## Bats: tests ejecutables para Bash
+
+Bats significa **Bash Automated Testing System**. Un archivo `.bats` es un script Bash con sintaxis especial para definir test cases.
+
+Primer test:
+
+```bash
+#!/usr/bin/env bats
+
+@test "true exits successfully" {
+  true
+}
+
+@test "false fails" {
+  ! false
+}
+```
+
+Ejecutar:
+
+```bash
+bats test/
+```
+
+Forzar salida TAP:
+
+```bash
+bats --formatter tap test/
+```
+
+Generar reporte JUnit:
+
+```bash
+bats --report-formatter junit --output reports test/
+```
+
+Ejecutar en paralelo:
+
+```bash
+bats --jobs 4 test/
+```
+
+Usa paralelismo solo si tus tests son independientes. Si comparten ficheros, puertos, bases de datos o variables globales, primero arregla el aislamiento.
+
+## Entender `run`, `$status`, `$output` y `$lines`
+
+`run` ejecuta un comando y captura su salida y estado.
+
+```bash
+@test "script prints version" {
+  run ./scripts/deploy.sh --version
+
+  [ "$status" -eq 0 ]
+  [ "$output" = "deploy.sh 1.0.0" ]
+}
+```
+
+Variables creadas por `run`:
+
+- `$status`: exit status del comando.
+- `$output`: stdout y stderr capturados.
+- `${lines[0]}`: primera línea de salida.
+- `${lines[@]}`: todas las líneas de salida.
+
+Punto clave: `run` normalmente no falla el test por sí solo. Debes afirmar el resultado.
+
+```bash
+@test "invalid environment fails" {
+  run ./scripts/deploy.sh productionn
+
+  [ "$status" -eq 2 ]
+  [[ "$output" == *"invalid environment"* ]]
+}
+```
+
+## Usar bats-assert
+
+`bats-assert` hace los tests más legibles.
+
+Carga helpers:
+
+```bash
+setup() {
+  load 'test_helper/bats-support/load'
+  load 'test_helper/bats-assert/load'
+}
+```
+
+Test:
+
+```bash
+@test "version flag prints version" {
+  run ./scripts/deploy.sh --version
+
+  assert_success
+  assert_output "deploy.sh 1.0.0"
+}
+```
+
+Salida parcial:
+
+```bash
+@test "invalid environment shows useful error" {
+  run ./scripts/deploy.sh productionn
+
+  assert_failure 2
+  assert_output --partial "invalid environment"
+}
+```
+
+Negación:
+
+```bash
+@test "help does not print stack traces" {
+  run ./scripts/deploy.sh --help
+
+  assert_success
+  refute_output --partial "Traceback"
+}
+```
+
+Ventaja: cuando falla, el mensaje de error es mucho más útil que una comparación manual con `[ ... ]`.
+
+## Usar bats-file
+
+`bats-file` aporta assertions para filesystem.
+
+Carga:
+
+```bash
+setup() {
+  load 'test_helper/bats-support/load'
+  load 'test_helper/bats-assert/load'
+  load 'test_helper/bats-file/load'
+}
+```
+
+Ejemplo:
+
+```bash
+@test "backup creates archive" {
+  mkdir -p "$BATS_TEST_TMPDIR/input"
+  printf 'hello\n' > "$BATS_TEST_TMPDIR/input/file.txt"
+
+  run ./scripts/backup.sh \
+    --source "$BATS_TEST_TMPDIR/input" \
+    --target "$BATS_TEST_TMPDIR/output"
+
+  assert_success
+  assert_dir_exists "$BATS_TEST_TMPDIR/output"
+}
+```
+
+Assertions útiles:
+
+```bash
+assert_file_exists "$path"
+assert_file_not_exists "$path"
+assert_dir_exists "$path"
+assert_dir_not_exists "$path"
+assert_exists "$path"
+assert_not_exists "$path"
+```
+
+## Instalar helpers como submódulos
+
+Una forma simple de versionar Bats y sus librerías:
+
+```bash
+git submodule add https://github.com/bats-core/bats-core.git test/bats
+git submodule add https://github.com/bats-core/bats-support.git test/test_helper/bats-support
+git submodule add https://github.com/bats-core/bats-assert.git test/test_helper/bats-assert
+git submodule add https://github.com/bats-core/bats-file.git test/test_helper/bats-file
+```
+
+Ejecutar con el Bats versionado:
+
+```bash
+./test/bats/bin/bats test/
+```
+
+Actualizar submódulos:
+
+```bash
+git submodule update --init --recursive
+```
+
+Ventaja: el equipo y CI usan la misma versión. Desventaja: introduces submódulos, que requieren disciplina.
+
+Alternativa: instalar Bats y helpers por package manager o imagen Docker.
+
+## Diseñar scripts testeables
+
+Un script difícil de testear suele tener estas señales:
+
+- todo ocurre en el scope global,
+- no hay funciones,
+- siempre ejecuta `main` al hacer `source`,
+- escribe logs y datos mezclados en stdout,
+- usa rutas fijas como `/tmp/app`,
+- depende directamente de comandos externos sin forma de simularlos,
+- no valida argumentos,
+- no usa exit codes consistentes.
+
+Patrón testeable:
+
+```bash
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+usage() {
+  cat <<'EOF'
+usage: deploy.sh environment version
+EOF
+}
+
+validate_environment() {
+  local environment="${1:?environment required}"
+
+  case "$environment" in
+    staging|production)
+      return 0
+      ;;
+    *)
+      printf 'invalid environment: %s\n' "$environment" >&2
+      return 2
+      ;;
+  esac
+}
+
+main() {
+  if [[ "${1:-}" == "--help" ]]; then
+    usage
+    return 0
+  fi
+
+  local environment="${1:?environment required}"
+  local version="${2:?version required}"
+
+  validate_environment "$environment"
+  printf 'deploying %s to %s\n' "$version" "$environment"
+}
+
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  main "$@"
+fi
+```
+
+La última condición permite importar funciones en tests sin ejecutar el script completo.
+
+## Test unitario de funciones
+
+`test/deploy.bats`:
+
+```bash
+#!/usr/bin/env bats
+
+setup() {
+  load 'test_helper/bats-support/load'
+  load 'test_helper/bats-assert/load'
+
+  PROJECT_ROOT="$(cd "$BATS_TEST_DIRNAME/.." && pwd)"
+  source "$PROJECT_ROOT/scripts/deploy.sh"
+}
+
+@test "validate_environment accepts staging" {
+  run validate_environment staging
+
+  assert_success
+}
+
+@test "validate_environment rejects typo" {
+  run validate_environment productionn
+
+  assert_failure 2
+  assert_output --partial "invalid environment"
+}
+```
+
+Este test no ejecuta el deploy completo. Solo prueba una función pura o casi pura.
+
+Regla práctica: si una función no necesita red, filesystem ni proceso externo, test unitario. Si invoca herramientas reales, test de integración.
+
+## Test de CLI
+
+Tests de cómo se comporta el script ejecutado desde fuera:
+
+```bash
+#!/usr/bin/env bats
+
+setup() {
+  load 'test_helper/bats-support/load'
+  load 'test_helper/bats-assert/load'
+
+  PROJECT_ROOT="$(cd "$BATS_TEST_DIRNAME/.." && pwd)"
+  DEPLOY="$PROJECT_ROOT/scripts/deploy.sh"
+}
+
+@test "help exits successfully" {
+  run "$DEPLOY" --help
+
+  assert_success
+  assert_output --partial "usage:"
+}
+
+@test "missing arguments fails" {
+  run "$DEPLOY"
+
+  assert_failure
+  assert_output --partial "environment required"
+}
+
+@test "valid deployment prints action" {
+  run "$DEPLOY" staging v1.2.3
+
+  assert_success
+  assert_output "deploying v1.2.3 to staging"
+}
+```
+
+Estos tests cubren la interfaz real del usuario: argumentos, output y exit status.
+
+## Test de ficheros con `BATS_TEST_TMPDIR`
+
+Bats crea un directorio temporal por test. Úsalo para aislar filesystem.
+
+Script `scripts/backup.sh`:
+
+```bash
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+backup() {
+  local source_dir="${1:?source_dir required}"
+  local target_dir="${2:?target_dir required}"
+
+  [[ -d "$source_dir" ]] || {
+    printf 'source not found: %s\n' "$source_dir" >&2
+    return 2
+  }
+
+  mkdir -p -- "$target_dir"
+  tar -czf "$target_dir/backup.tar.gz" -C "$source_dir" .
+}
+
+main() {
+  backup "${1:?source required}" "${2:?target required}"
+}
+
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  main "$@"
+fi
+```
+
+Test:
+
+```bash
+#!/usr/bin/env bats
+
+setup() {
+  load 'test_helper/bats-support/load'
+  load 'test_helper/bats-assert/load'
+  load 'test_helper/bats-file/load'
+
+  PROJECT_ROOT="$(cd "$BATS_TEST_DIRNAME/.." && pwd)"
+  BACKUP="$PROJECT_ROOT/scripts/backup.sh"
+}
+
+@test "backup creates archive" {
+  mkdir -p "$BATS_TEST_TMPDIR/source"
+  printf 'hello\n' > "$BATS_TEST_TMPDIR/source/file.txt"
+
+  run "$BACKUP" "$BATS_TEST_TMPDIR/source" "$BATS_TEST_TMPDIR/target"
+
+  assert_success
+  assert_file_exists "$BATS_TEST_TMPDIR/target/backup.tar.gz"
+}
+
+@test "backup fails when source does not exist" {
+  run "$BACKUP" "$BATS_TEST_TMPDIR/missing" "$BATS_TEST_TMPDIR/target"
+
+  assert_failure 2
+  assert_output --partial "source not found"
+  assert_dir_not_exists "$BATS_TEST_TMPDIR/target"
+}
+```
+
+Ventajas:
+
+- no ensucia `/tmp`,
+- no depende del estado local,
+- no borra datos reales,
+- puede ejecutarse en paralelo si cada test usa su propio directorio.
+
+## Fixtures
+
+Los fixtures son entradas estáticas versionadas.
+
+Estructura:
+
+```text
+test/
+  fixtures/
+    users.csv
+    config-valid.env
+    config-invalid.env
+```
+
+Uso:
+
+```bash
+@test "parser accepts valid env file" {
+  run "$PROJECT_ROOT/scripts/validate-env.sh" \
+    "$PROJECT_ROOT/test/fixtures/config-valid.env"
+
+  assert_success
+}
+```
+
+Reglas:
+
+- Los fixtures deben ser pequeños.
+- Deben representar casos reales.
+- No deben contener secretos.
+- Si un fixture es difícil de entender, añade un comentario o README.
+
+## Mocks y fakes de comandos externos
+
+Muchos scripts invocan `curl`, `git`, `docker`, `aws`, `kubectl` o `gh`. Para tests deterministas, puedes simularlos con scripts falsos al principio del `PATH`.
+
+Estructura:
+
+```text
+test/
+  fakes/
+    curl
+```
+
+Fake `test/fakes/curl`:
+
+```bash
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+printf 'fake curl called with: %s\n' "$*" >> "${FAKE_CURL_LOG:?}"
+
+case "$*" in
+  *"/health"*)
+    printf '{"status":"ok"}\n'
+    ;;
+  *)
+    printf 'not found\n' >&2
+    exit 22
+    ;;
+esac
+```
+
+Hazlo ejecutable:
+
+```bash
+chmod +x test/fakes/curl
+```
+
+Test:
+
+```bash
+setup() {
+  load 'test_helper/bats-support/load'
+  load 'test_helper/bats-assert/load'
+
+  PROJECT_ROOT="$(cd "$BATS_TEST_DIRNAME/.." && pwd)"
+  export FAKE_CURL_LOG="$BATS_TEST_TMPDIR/curl.log"
+  export PATH="$PROJECT_ROOT/test/fakes:$PATH"
+}
+
+@test "health check calls expected endpoint" {
+  run "$PROJECT_ROOT/scripts/healthcheck.sh" "https://api.example.com"
+
+  assert_success
+  assert_output --partial '"status":"ok"'
+  grep -q "/health" "$FAKE_CURL_LOG"
+}
+```
+
+Este patrón evita llamadas de red reales y permite verificar cómo se invocó la dependencia.
+
+## Probar errores esperados
+
+Un buen test suite prueba happy path y errores.
+
+```bash
+@test "deploy refuses production without confirmation" {
+  run "$DEPLOY" production v1.2.3
+
+  assert_failure 2
+  assert_output --partial "confirmation required"
+}
+```
+
+Test de permisos:
+
+```bash
+@test "script fails if target is not writable" {
+  mkdir -p "$BATS_TEST_TMPDIR/target"
+  chmod 500 "$BATS_TEST_TMPDIR/target"
+
+  run "$BACKUP" "$BATS_TEST_TMPDIR/source" "$BATS_TEST_TMPDIR/target"
+
+  assert_failure
+}
+```
+
+Ten cuidado con tests de permisos en CI y macOS: algunos filesystems o usuarios pueden comportarse distinto. Mantén estos tests pequeños y documentados.
+
+## `setup`, `teardown`, `setup_file` y `teardown_file`
+
+`setup` corre antes de cada test:
+
+```bash
+setup() {
+  PROJECT_ROOT="$(cd "$BATS_TEST_DIRNAME/.." && pwd)"
+}
+```
+
+`teardown` corre después de cada test:
+
+```bash
+teardown() {
+  rm -f "$BATS_TEST_TMPDIR/output.log"
+}
+```
+
+`setup_file` corre una vez antes de los tests del archivo:
+
+```bash
+setup_file() {
+  export PROJECT_ROOT
+  PROJECT_ROOT="$(cd "$BATS_TEST_DIRNAME/.." && pwd)"
+}
+```
+
+`teardown_file` corre una vez al final:
+
+```bash
+teardown_file() {
+  :
+}
+```
+
+Regla profesional:
+
+- Usa `setup` para estado aislado por test.
+- Usa `setup_file` solo para recursos caros y compartibles.
+- No compartas estado mutable entre tests si quieres paralelizar.
+
+## Helper común
+
+`test/test_helper/common.bash`:
+
+```bash
+#!/usr/bin/env bash
+
+load 'test_helper/bats-support/load'
+load 'test_helper/bats-assert/load'
+load 'test_helper/bats-file/load'
+
+setup_project() {
+  PROJECT_ROOT="$(cd "$BATS_TEST_DIRNAME/.." && pwd)"
+  export PROJECT_ROOT
+
+  PATH="$PROJECT_ROOT/scripts:$PATH"
+  export PATH
+}
+```
+
+Uso:
+
+```bash
+setup() {
+  load 'test_helper/common'
+  setup_project
+}
+```
+
+Mantén helpers pequeños. Si el helper se vuelve más complejo que los tests, estás escondiendo demasiada lógica.
+
+## `Makefile` para flujo local
+
+```makefile
+.PHONY: test test-shell lint-shell syntax-shell bats
+
+SHELL_SCRIPTS := $(shell find scripts -name '*.sh' -type f)
+
+syntax-shell:
+	bash -n $(SHELL_SCRIPTS)
+
+lint-shell:
+	shellcheck --shell=bash $(SHELL_SCRIPTS)
+
+bats:
+	bats test/
+
+test-shell: syntax-shell lint-shell bats
+
+test: test-shell
+```
+
+Uso:
+
+```bash
+make test-shell
+```
+
+Ventaja: local y CI ejecutan lo mismo.
+
+## Pre-commit hook
+
+`.githooks/pre-commit`:
+
+```bash
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+make test-shell
+```
+
+Activar:
+
+```bash
+git config core.hooksPath .githooks
+chmod +x .githooks/pre-commit
+```
+
+No metas tests lentos en `pre-commit` si van a bloquear el flujo. Para hooks locales:
+
+- `bash -n`: siempre.
+- `shellcheck`: casi siempre.
+- Bats rápido: sí.
+- Integración lenta: mejor en `pre-push` o CI.
+
+## GitHub Actions
+
+Workflow:
+
+```yaml
+name: Shell tests
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  shell:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y shellcheck bats
+
+      - name: Syntax check
+        run: find scripts -name "*.sh" -type f -print0 | xargs -0 bash -n
+
+      - name: ShellCheck
+        run: shellcheck --shell=bash scripts/*.sh
+
+      - name: Bats
+        run: bats --formatter tap test/
+```
+
+Si usas submódulos para Bats y helpers:
+
+```yaml
+- uses: actions/checkout@v4
+  with:
+    submodules: recursive
+
+- name: Bats
+  run: ./test/bats/bin/bats --formatter tap test/
+```
+
+Para reportes JUnit:
+
+```yaml
+- name: Bats JUnit
+  run: |
+    mkdir -p reports
+    bats --report-formatter junit --output reports test/
+
+- uses: actions/upload-artifact@v4
+  if: always()
+  with:
+    name: bats-report
+    path: reports/
+```
+
+## Tests con Docker
+
+Si no quieres instalar Bats en el runner:
+
+```bash
+docker run --rm \
+  -v "$PWD:/code" \
+  bats/bats:latest \
+  test/
+```
+
+ShellCheck:
+
+```bash
+docker run --rm \
+  -v "$PWD:/mnt" \
+  koalaman/shellcheck:stable \
+  scripts/*.sh
+```
+
+Esto ayuda a fijar entorno, pero tiene coste:
+
+- rutas y permisos pueden variar,
+- herramientas externas no instaladas en la imagen fallarán,
+- los tests con Docker dentro de Docker requieren diseño adicional.
+
+## Qué probar en scripts Bash
+
+Prioriza:
+
+- argumentos obligatorios,
+- flags,
+- exit status,
+- stdout cuando el script produce datos,
+- stderr cuando reporta errores,
+- creación o eliminación de ficheros,
+- permisos,
+- retries,
+- comportamiento sin dependencias,
+- comportamiento ante dependencias que fallan,
+- integración con comandos externos mediante fakes.
+
+No hace falta probar:
+
+- que `mkdir` crea directorios,
+- que `grep` filtra texto,
+- que Bash evalúa `[[ ... ]]`,
+- cada línea interna sin valor observable.
+
+Prueba contratos, no implementación accidental.
+
+## Ejemplo completo: script testeable
+
+`scripts/cleanup-logs.sh`:
+
+```bash
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+usage() {
+  cat <<'EOF'
+usage: cleanup-logs.sh --dir DIR --days DAYS [--dry-run]
+EOF
+}
+
+die() {
+  printf 'error: %s\n' "$*" >&2
+  exit 1
+}
+
+cleanup_logs() {
+  local dir="${1:?dir required}"
+  local days="${2:?days required}"
+  local dry_run="${3:-false}"
+
+  [[ -d "$dir" ]] || {
+    printf 'directory not found: %s\n' "$dir" >&2
+    return 2
+  }
+
+  [[ "$days" =~ ^[0-9]+$ ]] || {
+    printf 'days must be numeric: %s\n' "$days" >&2
+    return 2
+  }
+
+  if [[ "$dry_run" == "true" ]]; then
+    find "$dir" -name "*.log" -type f -mtime "+$days" -print
+    return 0
+  fi
+
+  find "$dir" -name "*.log" -type f -mtime "+$days" -delete
+}
+
+main() {
+  local dir=""
+  local days=""
+  local dry_run=false
+
+  while [[ "$#" -gt 0 ]]; do
+    case "$1" in
+      --dir)
+        dir="${2:-}"
+        shift 2
+        ;;
+      --days)
+        days="${2:-}"
+        shift 2
+        ;;
+      --dry-run)
+        dry_run=true
+        shift
+        ;;
+      --help)
+        usage
+        return 0
+        ;;
+      *)
+        printf 'unknown argument: %s\n' "$1" >&2
+        usage >&2
+        return 2
+        ;;
+    esac
+  done
+
+  [[ -n "$dir" ]] || die "--dir is required"
+  [[ -n "$days" ]] || die "--days is required"
+
+  cleanup_logs "$dir" "$days" "$dry_run"
+}
+
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  main "$@"
+fi
+```
+
+## Tests completos con Bats
+
+`test/cleanup-logs.bats`:
+
+```bash
+#!/usr/bin/env bats
+
+setup() {
+  load 'test_helper/bats-support/load'
+  load 'test_helper/bats-assert/load'
+  load 'test_helper/bats-file/load'
+
+  PROJECT_ROOT="$(cd "$BATS_TEST_DIRNAME/.." && pwd)"
+  SCRIPT="$PROJECT_ROOT/scripts/cleanup-logs.sh"
+}
+
+@test "help exits successfully" {
+  run "$SCRIPT" --help
+
+  assert_success
+  assert_output --partial "usage:"
+}
+
+@test "missing dir fails" {
+  run "$SCRIPT" --days 7
+
+  assert_failure
+  assert_output --partial "--dir is required"
+}
+
+@test "invalid directory fails with usage error" {
+  run "$SCRIPT" --dir "$BATS_TEST_TMPDIR/missing" --days 7
+
+  assert_failure 2
+  assert_output --partial "directory not found"
+}
+
+@test "days must be numeric" {
+  mkdir -p "$BATS_TEST_TMPDIR/logs"
+
+  run "$SCRIPT" --dir "$BATS_TEST_TMPDIR/logs" --days seven
+
+  assert_failure 2
+  assert_output --partial "days must be numeric"
+}
+
+@test "dry run prints matching old logs without deleting them" {
+  mkdir -p "$BATS_TEST_TMPDIR/logs"
+  touch "$BATS_TEST_TMPDIR/logs/app.log"
+
+  if touch -d "10 days ago" "$BATS_TEST_TMPDIR/logs/app.log" 2>/dev/null; then
+    :
+  else
+    skip "touch -d is not available on this platform"
+  fi
+
+  run "$SCRIPT" --dir "$BATS_TEST_TMPDIR/logs" --days 7 --dry-run
+
+  assert_success
+  assert_output --partial "app.log"
+  assert_file_exists "$BATS_TEST_TMPDIR/logs/app.log"
+}
+
+@test "deletes matching old logs" {
+  mkdir -p "$BATS_TEST_TMPDIR/logs"
+  touch "$BATS_TEST_TMPDIR/logs/app.log"
+
+  if touch -d "10 days ago" "$BATS_TEST_TMPDIR/logs/app.log" 2>/dev/null; then
+    :
+  else
+    skip "touch -d is not available on this platform"
+  fi
+
+  run "$SCRIPT" --dir "$BATS_TEST_TMPDIR/logs" --days 7
+
+  assert_success
+  assert_file_not_exists "$BATS_TEST_TMPDIR/logs/app.log"
+}
+```
+
+Este ejemplo cubre:
+
+- help,
+- argumentos obligatorios,
+- validación,
+- errores esperados,
+- efecto en filesystem,
+- `skip` cuando una dependencia de plataforma no existe.
+
+## ShellCheck sobre tests Bats
+
+ShellCheck no entiende siempre toda la sintaxis especial de Bats sin ajustes. Aun así, puedes lintar helpers y scripts productivos.
+
+```bash
+shellcheck --shell=bash scripts/*.sh test/test_helper/*.bash
+```
+
+Para `.bats`, puedes usar `--shell=bash`, pero puede requerir excepciones:
+
+```bash
+shellcheck --shell=bash test/*.bats
+```
+
+Si una regla no aplica por sintaxis de Bats:
+
+```bash
+# shellcheck disable=SC2030,SC2031
+@test "example" {
+  run command
+  assert_success
+}
+```
+
+No fuerces ShellCheck sobre `.bats` si genera ruido sin valor. Lo importante es no dejar sin análisis los scripts productivos y helpers Bash.
+
+## Debugging de Bats
+
+Mostrar output cuando falla:
+
+```bash
+bats --print-output-on-failure test/
+```
+
+Trazar comandos:
+
+```bash
+bats --trace test/
+```
+
+Ver output de tests que pasan:
+
+```bash
+bats --show-output-of-passing-tests test/
+```
+
+Preservar temporales:
+
+```bash
+bats --no-tempdir-cleanup test/
+```
+
+Ejecutar un archivo:
+
+```bash
+bats test/cleanup-logs.bats
+```
+
+Filtrar por nombre puede hacerse con opciones de Bats según versión, pero para debugging rápido suele bastar con ejecutar un archivo o comentar temporalmente tests durante investigación local.
+
+## Tests deterministas
+
+Evita que los tests dependan de:
+
+- hora real,
+- red externa,
+- contenido del home del usuario,
+- comandos no instalados,
+- idioma del sistema,
+- orden no garantizado de `find` o `ls`,
+- ficheros compartidos en `/tmp`,
+- puertos fijos,
+- credenciales reales.
+
+Patrones útiles:
+
+```bash
+export LC_ALL=C
+```
+
+Ordenar salidas:
+
+```bash
+run bash -c 'find "$1" -type f -print | sort' _ "$BATS_TEST_TMPDIR"
+```
+
+Usar temporales por test:
+
+```bash
+workdir="$BATS_TEST_TMPDIR/work"
+mkdir -p "$workdir"
+```
+
+Usar fakes:
+
+```bash
+PATH="$PROJECT_ROOT/test/fakes:$PATH"
+export PATH
+```
+
+## Paralelismo
+
+Bats soporta `--jobs`, pero tus tests deben ser independientes.
+
+Bueno:
+
+```bash
+bats --jobs 4 test/
+```
+
+Riesgoso:
+
+- todos los tests escriben en `/tmp/app.log`,
+- todos usan el mismo puerto `3000`,
+- todos modifican el mismo fixture,
+- todos dependen de un orden de ejecución.
+
+Si necesitas paralelismo:
+
+- usa `BATS_TEST_TMPDIR`,
+- evita puertos fijos,
+- no compartas estado mutable,
+- reejecuta varias veces para detectar flakiness.
+
+## Estrategia de cobertura práctica
+
+No necesitas medir cobertura de líneas para obtener valor. En Bash, una matriz de comportamiento suele ser más útil.
+
+Ejemplo para `deploy.sh`:
+
+| Caso | Esperado |
+| --- | --- |
+| `--help` | exit `0`, muestra usage |
+| sin argumentos | exit no cero, error claro |
+| entorno inválido | exit `2`, no despliega |
+| versión inválida | exit `2`, no despliega |
+| staging válido | llama al deploy con staging |
+| production sin confirmación | falla |
+| production confirmado | despliega |
+| dependencia externa falla | propaga error útil |
+
+La pregunta no es "¿probé cada línea?", sino "¿probé cada contrato que rompería un despliegue?".
+
+## Checklist para scripts testeados
+
+- `bash -n` pasa.
+- ShellCheck pasa sin warnings relevantes.
+- Las excepciones de ShellCheck están justificadas.
+- Los scripts tienen shebang correcto.
+- El código productivo se puede importar sin ejecutar `main`.
+- Hay tests de CLI para argumentos y exit status.
+- Hay tests de errores esperados.
+- Los tests usan `BATS_TEST_TMPDIR`.
+- No dependen de red real si puede evitarse.
+- Los comandos externos críticos están simulados con fakes.
+- Los logs van a stderr y los datos a stdout.
+- CI ejecuta syntax check, ShellCheck y Bats.
+- Los tests no requieren secretos reales.
+
+## Chuleta
+
+| Objetivo | Comando o patrón |
+| --- | --- |
+| Validar sintaxis | `bash -n scripts/script.sh` |
+| Lint Bash | `shellcheck --shell=bash scripts/*.sh` |
+| Seguir `source` | `shellcheck -x scripts/*.sh` |
+| Ejecutar Bats | `bats test/` |
+| TAP | `bats --formatter tap test/` |
+| JUnit | `bats --report-formatter junit --output reports test/` |
+| Paralelo | `bats --jobs 4 test/` |
+| Debug trace | `bats --trace test/` |
+| Output en fallo | `bats --print-output-on-failure test/` |
+| Test case | `@test "name" { ... }` |
+| Capturar comando | `run command arg` |
+| Estado | `$status` |
+| Salida | `$output` |
+| Líneas | `${lines[@]}` |
+| Éxito con helper | `assert_success` |
+| Fallo con helper | `assert_failure 2` |
+| Output parcial | `assert_output --partial "text"` |
+| Fichero existe | `assert_file_exists "$path"` |
+| Temporal por test | `$BATS_TEST_TMPDIR` |
+
+## Glosario
+
+**Bats**: framework TAP-compliant para probar scripts Bash y programas Unix.
+
+**ShellCheck**: herramienta de análisis estático para scripts shell.
+
+**Static analysis**: análisis de código sin ejecutarlo.
+
+**Assertion**: comprobación que falla el test si una condición no se cumple.
+
+**Fixture**: entrada de prueba versionada y estable.
+
+**Fake**: implementación simple de una dependencia externa usada en tests.
+
+**Mock**: doble de prueba que además permite verificar interacciones.
+
+**TAP**: Test Anything Protocol, formato textual para reportar resultados de tests.
+
+**JUnit report**: formato XML común para reportes de CI.
+
+**Exit status**: código de salida de un comando.
+
+**Flaky test**: test que pasa o falla de forma no determinista.
+
+**Test isolation**: propiedad de que cada test puede correr sin depender del estado de otros.
+
+**Helper**: archivo común con funciones para tests.
+
+**Submodule**: repositorio Git anidado dentro de otro repositorio.
+
+## Referencias oficiales
+
+- [ShellCheck README](https://github.com/koalaman/shellcheck)
+- [ShellCheck Wiki](https://www.shellcheck.net/wiki/Home)
+- [bats-core README](https://github.com/bats-core/bats-core)
+- [bats-core documentation](https://bats-core.readthedocs.io/en/stable/)
+- [Bats tutorial](https://bats-core.readthedocs.io/en/stable/tutorial.html)
+- [Bats usage](https://bats-core.readthedocs.io/en/stable/usage.html)
+- [bats-assert](https://github.com/bats-core/bats-assert)
+- [bats-file](https://github.com/bats-core/bats-file)
+
+## Cierre
+
+Testing en Bash funciona mejor cuando aceptas la naturaleza del entorno: texto, procesos, ficheros y exit status. ShellCheck te protege contra errores estructurales antes de ejecutar nada; Bats valida que el script hace lo que promete. Si tus scripts pasan análisis estático, tienen tests de CLI, usan temporales aislados, simulan dependencias externas y corren en CI, dejan de ser automatizaciones frágiles y pasan a ser piezas mantenibles de infraestructura.

@@ -1,0 +1,520 @@
+---
+title: "Prometheus con Grafana: métricas, alertas y dashboard práctico"
+description: "Una guía práctica para montar Prometheus con Grafana, scrapear exporters, escribir PromQL, crear alertas e importar un dashboard operativo."
+pubDate: "2026-05-03"
+category: "Observabilidad"
+tags: ["prometheus", "grafana", "metrics", "observability", "promql"]
+---
+
+Prometheus es una pieza central en observabilidad moderna: recolecta métricas por scraping, las almacena como series temporales, permite consultarlas con PromQL y se integra muy bien con Grafana para construir dashboards operativos.
+
+Este tutorial es práctico: vas a levantar Prometheus, Grafana, Node Exporter y cAdvisor con Docker Compose; vas a escribir consultas PromQL útiles; vas a definir alertas; y vas a importar un dashboard de Grafana listo para usar.
+
+Dashboard incluido:
+
+- [Descargar dashboard Prometheus Overview](/assets/grafana-dashboards/prometheus-overview.json)
+
+## Modelo mental
+
+Prometheus funciona con un modelo pull:
+
+```text
+targets exponen /metrics
+Prometheus scrapea esos targets
+Prometheus guarda series temporales
+PromQL consulta esas series
+Grafana visualiza los resultados
+Alertmanager enruta alertas
+```
+
+Piezas principales:
+
+- **Target**: endpoint HTTP que expone métricas, normalmente `/metrics`.
+- **Exporter**: proceso que convierte métricas de un sistema a formato Prometheus.
+- **Scrape job**: configuración que agrupa targets.
+- **Metric**: nombre de una serie, como `up` o `node_cpu_seconds_total`.
+- **Label**: dimensión de una serie, como `job`, `instance`, `method` o `status`.
+- **PromQL**: lenguaje de consultas de Prometheus.
+- **Recording rule**: consulta precomputada y guardada como nueva métrica.
+- **Alerting rule**: regla que dispara una alerta cuando una expresión se mantiene cierta.
+
+## Stack local con Docker Compose
+
+Estructura:
+
+```text
+observability/
+  compose.yml
+  prometheus/
+    prometheus.yml
+    rules.yml
+  grafana/
+    provisioning/
+      datasources/
+        prometheus.yml
+      dashboards/
+        dashboards.yml
+    dashboards/
+      prometheus-overview.json
+```
+
+`compose.yml`:
+
+```yaml
+services:
+  prometheus:
+    image: prom/prometheus:v3.0.1
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--storage.tsdb.retention.time=15d"
+      - "--web.enable-lifecycle"
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./prometheus/rules.yml:/etc/prometheus/rules.yml:ro
+      - prometheus_data:/prometheus
+
+  grafana:
+    image: grafana/grafana:latest
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+    depends_on:
+      - prometheus
+
+  node-exporter:
+    image: prom/node-exporter:v1.9.0
+    command:
+      - "--path.rootfs=/host"
+    pid: host
+    volumes:
+      - "/:/host:ro,rslave"
+
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:v0.49.1
+    ports:
+      - "8080:8080"
+    volumes:
+      - "/:/rootfs:ro"
+      - "/var/run:/var/run:ro"
+      - "/sys:/sys:ro"
+      - "/var/lib/docker/:/var/lib/docker:ro"
+
+volumes:
+  prometheus_data:
+  grafana_data:
+```
+
+Levantar:
+
+```bash
+docker compose up -d
+```
+
+URLs:
+
+```text
+Prometheus: http://localhost:9090
+Grafana:    http://localhost:3000
+cAdvisor:  http://localhost:8080
+```
+
+Credenciales de Grafana:
+
+```text
+admin / admin
+```
+
+## Configurar Prometheus
+
+`prometheus/prometheus.yml`:
+
+```yaml
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    monitor: local-observability
+
+rule_files:
+  - /etc/prometheus/rules.yml
+
+scrape_configs:
+  - job_name: prometheus
+    static_configs:
+      - targets:
+          - prometheus:9090
+
+  - job_name: node
+    static_configs:
+      - targets:
+          - node-exporter:9100
+
+  - job_name: cadvisor
+    static_configs:
+      - targets:
+          - cadvisor:8080
+```
+
+Validar configuración dentro del contenedor:
+
+```bash
+docker compose exec prometheus promtool check config /etc/prometheus/prometheus.yml
+```
+
+Recargar configuración sin reiniciar:
+
+```bash
+curl -X POST http://localhost:9090/-/reload
+```
+
+## Provisionar datasource de Grafana
+
+`grafana/provisioning/datasources/prometheus.yml`:
+
+```yaml
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    uid: prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    editable: true
+```
+
+Provisionar dashboards:
+
+`grafana/provisioning/dashboards/dashboards.yml`:
+
+```yaml
+apiVersion: 1
+
+providers:
+  - name: tutorial-dashboards
+    orgId: 1
+    folder: Observabilidad
+    type: file
+    disableDeletion: false
+    editable: true
+    options:
+      path: /var/lib/grafana/dashboards
+```
+
+Copia el dashboard incluido:
+
+```bash
+mkdir -p grafana/dashboards
+cp app/public/assets/grafana-dashboards/prometheus-overview.json grafana/dashboards/
+```
+
+Si lo importas manualmente desde Grafana, descarga este archivo:
+
+- [prometheus-overview.json](/assets/grafana-dashboards/prometheus-overview.json)
+
+## PromQL esencial
+
+Estado de targets:
+
+```promql
+up
+```
+
+Targets caídos:
+
+```promql
+up == 0
+```
+
+Contar targets caídos:
+
+```promql
+count(up == 0)
+```
+
+Requests por segundo de Prometheus:
+
+```promql
+sum by (job) (rate(prometheus_http_requests_total[5m]))
+```
+
+CPU usada por instancia con Node Exporter:
+
+```promql
+1 - avg by (instance) (rate(node_cpu_seconds_total{mode="idle"}[5m]))
+```
+
+Memoria usada:
+
+```promql
+1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)
+```
+
+Uso de disco:
+
+```promql
+1 - (
+  node_filesystem_avail_bytes{fstype!~"tmpfs|overlay"}
+  /
+  node_filesystem_size_bytes{fstype!~"tmpfs|overlay"}
+)
+```
+
+CPU de contenedores con cAdvisor:
+
+```promql
+sum by (name) (rate(container_cpu_usage_seconds_total{name!=""}[5m]))
+```
+
+Memoria de contenedores:
+
+```promql
+container_memory_working_set_bytes{name!=""}
+```
+
+## Métricas y etiquetas
+
+Una serie Prometheus combina nombre y labels:
+
+```text
+node_cpu_seconds_total{instance="node-exporter:9100", job="node", mode="idle", cpu="0"}
+```
+
+Buenas prácticas:
+
+- Usa labels para dimensiones acotadas.
+- Evita labels con cardinalidad alta, como `user_id`, `email`, `request_id` o `trace_id`.
+- Nombra métricas con unidad, por ejemplo `_seconds`, `_bytes`, `_total`.
+- Usa counters para eventos acumulativos.
+- Usa histograms para latencia y tamaños.
+
+La cardinalidad importa: cada combinación única de labels crea una serie. Muchas series elevan memoria, disco y coste de consulta.
+
+## Recording rules
+
+`prometheus/rules.yml`:
+
+```yaml
+groups:
+  - name: node-recording-rules
+    interval: 30s
+    rules:
+      - record: instance:node_cpu_utilisation:rate5m
+        expr: 1 - avg by (instance) (rate(node_cpu_seconds_total{mode="idle"}[5m]))
+
+      - record: instance:node_memory_utilisation:ratio
+        expr: 1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)
+```
+
+Validar:
+
+```bash
+docker compose exec prometheus promtool check rules /etc/prometheus/rules.yml
+```
+
+Usar recording rules en dashboards:
+
+```promql
+instance:node_cpu_utilisation:rate5m
+```
+
+Ventajas:
+
+- consultas más rápidas,
+- dashboards más simples,
+- lógica común centralizada,
+- menos repetición de expresiones complejas.
+
+## Alerting rules
+
+Añade al mismo `rules.yml`:
+
+```yaml
+  - name: node-alerts
+    rules:
+      - alert: TargetDown
+        expr: up == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Target caído"
+          description: "{{ $labels.job }} {{ $labels.instance }} lleva más de 2 minutos caído."
+
+      - alert: HighCpuUsage
+        expr: instance:node_cpu_utilisation:rate5m > 0.85
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "CPU alta"
+          description: "{{ $labels.instance }} supera 85% de CPU durante 10 minutos."
+```
+
+Ver alertas:
+
+```text
+http://localhost:9090/alerts
+```
+
+En producción, Prometheus no debería notificar directamente: se integra con Alertmanager para deduplicar, agrupar y enrutar alertas.
+
+## Dashboard de Grafana incluido
+
+El dashboard creado para este post incluye:
+
+- targets caídos,
+- requests por segundo por job,
+- p99 del intervalo de scrape,
+- CPU usada por instancia,
+- memoria usada por instancia,
+- tabla de estado de targets.
+
+Importación manual:
+
+1. Abre Grafana.
+2. Ve a **Dashboards**.
+3. Pulsa **New** y luego **Import**.
+4. Sube [prometheus-overview.json](/assets/grafana-dashboards/prometheus-overview.json).
+5. Selecciona tu datasource Prometheus.
+6. Pulsa **Import**.
+
+Si no tienes Node Exporter, los paneles de CPU y memoria no mostrarán datos. Si no tienes cAdvisor, puedes añadir paneles después con métricas de contenedores.
+
+## Paneles recomendados
+
+Panel de disponibilidad:
+
+```promql
+avg(up)
+```
+
+Panel de targets por estado:
+
+```promql
+count by (job) (up)
+```
+
+Panel de CPU:
+
+```promql
+instance:node_cpu_utilisation:rate5m
+```
+
+Panel de memoria:
+
+```promql
+instance:node_memory_utilisation:ratio
+```
+
+Panel de errores HTTP si tu app exporta métricas:
+
+```promql
+sum by (route) (rate(http_requests_total{status=~"5.."}[5m]))
+```
+
+Panel de latencia p95 con histogram:
+
+```promql
+histogram_quantile(
+  0.95,
+  sum by (le, route) (rate(http_request_duration_seconds_bucket[5m]))
+)
+```
+
+## Debugging
+
+Ver targets:
+
+```text
+http://localhost:9090/targets
+```
+
+Ver configuración activa:
+
+```text
+http://localhost:9090/config
+```
+
+Ver reglas:
+
+```text
+http://localhost:9090/rules
+```
+
+Consultar una métrica:
+
+```bash
+curl -s "http://localhost:9090/api/v1/query?query=up"
+```
+
+Logs:
+
+```bash
+docker compose logs -f prometheus
+docker compose logs -f grafana
+```
+
+Problemas frecuentes:
+
+- El target no resuelve por DNS dentro de Compose.
+- El puerto del exporter no es el correcto.
+- El endpoint `/metrics` devuelve 404.
+- La app no expone métricas en formato Prometheus.
+- Hay demasiada cardinalidad.
+- El dashboard consulta métricas que no existen en tu stack.
+
+## Checklist profesional
+
+- Prometheus tiene retención definida.
+- Los targets aparecen `UP`.
+- Las reglas pasan `promtool check rules`.
+- Las consultas caras se convierten en recording rules.
+- Los labels no tienen cardinalidad alta.
+- Las alertas tienen `for` para evitar ruido.
+- Grafana usa datasource provisionado.
+- El dashboard se versiona como JSON.
+- Hay backup del volumen o remote write en entornos importantes.
+- Se monitoriza al propio Prometheus.
+
+## Glosario
+
+**Exporter**: proceso que expone métricas en formato Prometheus.
+
+**PromQL**: lenguaje de consulta de Prometheus.
+
+**Scrape**: recolección periódica de métricas desde un endpoint.
+
+**Target**: endpoint que Prometheus scrapea.
+
+**Label**: dimensión asociada a una serie temporal.
+
+**Cardinalidad**: número de series únicas generadas por combinaciones de labels.
+
+**Recording rule**: regla que precomputa una consulta y la guarda como métrica.
+
+**Alerting rule**: regla que dispara una alerta si una expresión se cumple.
+
+**Grafana dashboard**: conjunto de paneles versionable como JSON.
+
+## Referencias oficiales
+
+- [Prometheus Getting started](https://prometheus.io/docs/prometheus/latest/getting_started/)
+- [Prometheus configuration](https://prometheus.io/docs/prometheus/latest/configuration/configuration/)
+- [Prometheus querying basics](https://prometheus.io/docs/prometheus/latest/querying/basics/)
+- [Prometheus recording rules](https://prometheus.io/docs/prometheus/latest/configuration/recording_rules/)
+- [Grafana dashboard JSON model](https://grafana.com/docs/grafana/latest/visualizations/dashboards/build-dashboards/view-dashboard-json-model/)
+
+## Cierre
+
+Prometheus funciona mejor cuando lo tratas como una base de datos de señales operativas, no como un almacén infinito de cualquier dato numérico. Scrapes claros, labels controlados, PromQL legible, recording rules para consultas caras, alertas accionables y dashboards versionados son la base de un sistema de métricas profesional.

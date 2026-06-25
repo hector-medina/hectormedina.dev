@@ -1,0 +1,597 @@
+---
+title: "Trazas con Tempo y Grafana: tracing distribuido y dashboard práctico"
+description: "Una guía práctica para montar tracing distribuido con Grafana Tempo, OpenTelemetry, Alloy y Grafana, consultar con TraceQL e importar un dashboard operativo."
+pubDate: "2026-07-05"
+category: "Observabilidad"
+tags: ["tempo", "traces", "grafana", "opentelemetry", "observability"]
+---
+
+Las trazas distribuidas permiten seguir una petición a través de múltiples servicios. Donde Prometheus responde "qué está pasando" y Loki ayuda a leer "qué dijo el sistema", las trazas responden "por dónde pasó una petición y cuánto tardó cada tramo".
+
+Este tutorial es práctico: vas a levantar Grafana Tempo, Grafana y Grafana Alloy; vas a recibir trazas por OTLP; vas a consultarlas con TraceQL; y vas a importar un dashboard de Grafana orientado a tracing.
+
+Dashboard incluido:
+
+- [Descargar dashboard Tempo Traces Overview](/assets/grafana-dashboards/tempo-traces-overview.json)
+
+## Modelo mental
+
+El flujo de tracing moderno es:
+
+```text
+aplicación instrumentada
+SDK OpenTelemetry
+OTLP
+collector
+Tempo
+Grafana
+TraceQL
+dashboards y exploración
+```
+
+Piezas principales:
+
+- **Trace**: recorrido completo de una operación distribuida.
+- **Span**: unidad de trabajo dentro de una traza.
+- **Trace ID**: identificador común de todos los spans de una traza.
+- **Span ID**: identificador de un span concreto.
+- **Parent span**: span que contiene o llama a otro span.
+- **Service name**: nombre lógico del servicio que emite spans.
+- **OTLP**: protocolo de OpenTelemetry para enviar telemetría.
+- **Collector**: componente que recibe, procesa y exporta trazas.
+- **Tempo**: backend de trazas de Grafana Labs.
+- **TraceQL**: lenguaje para buscar y filtrar trazas en Tempo.
+
+Una traza útil debe responder:
+
+- qué servicio recibió la petición,
+- qué servicios participaron,
+- qué operación fue lenta,
+- dónde ocurrió un error,
+- qué atributos explican el comportamiento.
+
+## Stack local con Docker Compose
+
+Estructura:
+
+```text
+observability-traces/
+  compose.yml
+  tempo/
+    tempo.yml
+  alloy/
+    config.alloy
+  grafana/
+    provisioning/
+      datasources/
+        tempo.yml
+      dashboards/
+        dashboards.yml
+    dashboards/
+      tempo-traces-overview.json
+```
+
+`compose.yml`:
+
+```yaml
+services:
+  tempo:
+    image: grafana/tempo:latest
+    command: ["-config.file=/etc/tempo.yml"]
+    ports:
+      - "3200:3200"
+      - "4317"
+    volumes:
+      - ./tempo/tempo.yml:/etc/tempo.yml:ro
+      - tempo_data:/var/tempo
+
+  alloy:
+    image: grafana/alloy:latest
+    command:
+      - run
+      - /etc/alloy/config.alloy
+      - --server.http.listen-addr=0.0.0.0:12345
+    ports:
+      - "12345:12345"
+      - "4317:4317"
+      - "4318:4318"
+    volumes:
+      - ./alloy/config.alloy:/etc/alloy/config.alloy:ro
+    depends_on:
+      - tempo
+
+  grafana:
+    image: grafana/grafana:latest
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+    depends_on:
+      - tempo
+
+volumes:
+  tempo_data:
+  grafana_data:
+```
+
+Levantar:
+
+```bash
+docker compose up -d
+```
+
+URLs:
+
+```text
+Grafana: http://localhost:3000
+Tempo:   http://localhost:3200
+Alloy:   http://localhost:12345
+OTLP gRPC: http://localhost:4317
+OTLP HTTP: http://localhost:4318
+```
+
+## Configurar Tempo
+
+`tempo/tempo.yml`:
+
+```yaml
+server:
+  http_listen_port: 3200
+
+distributor:
+  receivers:
+    otlp:
+      protocols:
+        grpc:
+          endpoint: 0.0.0.0:4317
+        http:
+          endpoint: 0.0.0.0:4318
+
+ingester:
+  trace_idle_period: 10s
+  max_block_duration: 5m
+
+compactor:
+  compaction:
+    block_retention: 24h
+
+storage:
+  trace:
+    backend: local
+    wal:
+      path: /var/tempo/wal
+    local:
+      path: /var/tempo/blocks
+
+querier:
+  frontend_worker:
+    frontend_address: 127.0.0.1:9095
+
+query_frontend:
+  search:
+    duration_slo: 5s
+    throughput_bytes_slo: 1073741824
+```
+
+Esta configuración es local. Para producción, Tempo suele usar almacenamiento de objetos, replicas, límites, retención definida, multi-tenancy si aplica y un collector separado por entorno o cluster.
+
+## Configurar Alloy como collector OTLP
+
+`alloy/config.alloy`:
+
+```river
+otelcol.receiver.otlp "default" {
+  grpc {
+    endpoint = "0.0.0.0:4317"
+  }
+
+  http {
+    endpoint = "0.0.0.0:4318"
+  }
+
+  output {
+    traces = [otelcol.processor.batch.default.input]
+  }
+}
+
+otelcol.processor.batch "default" {
+  output {
+    traces = [otelcol.exporter.otlp.tempo.input]
+  }
+}
+
+otelcol.exporter.otlp "tempo" {
+  client {
+    endpoint = "tempo:4317"
+
+    tls {
+      insecure = true
+    }
+  }
+}
+```
+
+Alloy recibe trazas por OTLP y las reenvía a Tempo. En producción puedes añadir processors para enriquecer atributos, filtrar, limitar memoria, hacer sampling o enrutar por tenant.
+
+## Provisionar datasource de Grafana
+
+`grafana/provisioning/datasources/tempo.yml`:
+
+```yaml
+apiVersion: 1
+
+datasources:
+  - name: Tempo
+    uid: tempo
+    type: tempo
+    access: proxy
+    url: http://tempo:3200
+    editable: true
+    jsonData:
+      tracesToLogsV2:
+        datasourceUid: loki
+        spanStartTimeShift: "-5m"
+        spanEndTimeShift: "5m"
+        tags:
+          - key: service.name
+            value: service_name
+      serviceMap:
+        datasourceUid: prometheus
+```
+
+Si todavía no tienes Loki o Prometheus, puedes omitir `tracesToLogsV2` y `serviceMap`. Los enlaces cruzados se activan cuando esos datasources existen.
+
+Provisionar dashboards:
+
+`grafana/provisioning/dashboards/dashboards.yml`:
+
+```yaml
+apiVersion: 1
+
+providers:
+  - name: tutorial-dashboards
+    orgId: 1
+    folder: Observabilidad
+    type: file
+    disableDeletion: false
+    editable: true
+    options:
+      path: /var/lib/grafana/dashboards
+```
+
+Copia el dashboard incluido:
+
+```bash
+mkdir -p grafana/dashboards
+cp app/public/assets/grafana-dashboards/tempo-traces-overview.json grafana/dashboards/
+```
+
+Importación manual:
+
+- [tempo-traces-overview.json](/assets/grafana-dashboards/tempo-traces-overview.json)
+
+## Enviar trazas de prueba
+
+Si usas una aplicación instrumentada con OpenTelemetry, apunta el exporter a Alloy:
+
+```text
+OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318
+OTEL_SERVICE_NAME=demo-api
+```
+
+Para SDKs que usan OTLP gRPC:
+
+```text
+OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4317
+OTEL_EXPORTER_OTLP_PROTOCOL=grpc
+OTEL_SERVICE_NAME=demo-api
+```
+
+Para SDKs que usan OTLP HTTP:
+
+```text
+OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318
+OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf
+OTEL_SERVICE_NAME=demo-api
+```
+
+También puedes generar trazas sintéticas con herramientas como `telemetrygen`:
+
+```bash
+docker run --rm \
+  --network observability-traces_default \
+  ghcr.io/open-telemetry/opentelemetry-collector-contrib/telemetrygen:latest \
+  traces \
+  --otlp-endpoint alloy:4317 \
+  --otlp-insecure \
+  --service demo-api \
+  --traces 100
+```
+
+Si tu project name de Compose no es `observability-traces`, ajusta el nombre de red.
+
+## Instrumentación mínima
+
+Variables estándar de OpenTelemetry:
+
+```bash
+export OTEL_SERVICE_NAME=checkout-api
+export OTEL_RESOURCE_ATTRIBUTES=deployment.environment=local,service.version=1.0.0
+export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318
+export OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf
+```
+
+Atributos recomendados:
+
+```text
+service.name
+service.version
+deployment.environment
+http.method
+http.route
+http.status_code
+db.system
+db.operation.name
+messaging.system
+```
+
+Evita atributos de alta cardinalidad cuando no aporten valor operativo:
+
+```text
+user.email
+raw_payload
+session_token
+credit_card
+```
+
+Los IDs de traza y span son parte del modelo de tracing. Los datos sensibles no.
+
+## TraceQL esencial
+
+Buscar trazas de un servicio:
+
+```traceql
+{ resource.service.name = "demo-api" }
+```
+
+Trazas con error:
+
+```traceql
+{ status = error }
+```
+
+Trazas lentas:
+
+```traceql
+{ trace:duration > 1s }
+```
+
+Spans HTTP 500:
+
+```traceql
+{ span.http.status_code >= 500 }
+```
+
+Ruta concreta:
+
+```traceql
+{ span.http.route = "/api/orders" }
+```
+
+Servicio y duración:
+
+```traceql
+{ resource.service.name = "checkout-api" && trace:duration > 500ms }
+```
+
+Errores de base de datos:
+
+```traceql
+{ span.db.system = "postgresql" && status = error }
+```
+
+TraceQL metrics, si tu versión lo soporta, permite construir series temporales desde trazas:
+
+```traceql
+{ } | rate() by (resource.service.name)
+```
+
+Errores por servicio:
+
+```traceql
+{ status = error } | rate() by (resource.service.name)
+```
+
+Si tus paneles de dashboard no muestran datos con TraceQL metrics, valida compatibilidad de Tempo y Grafana y prueba primero las queries en Explore.
+
+## Dashboard de Grafana incluido
+
+El dashboard creado para este post incluye:
+
+- trazas por segundo por servicio,
+- trazas con error por servicio,
+- tabla de trazas lentas,
+- tabla de trazas con error,
+- panel de actividad de spans.
+
+Importación:
+
+1. Abre Grafana.
+2. Ve a **Dashboards**.
+3. Pulsa **New** y luego **Import**.
+4. Sube [tempo-traces-overview.json](/assets/grafana-dashboards/tempo-traces-overview.json).
+5. Selecciona el datasource Tempo.
+6. Pulsa **Import**.
+
+Nota práctica: los paneles de tabla funcionan como búsquedas TraceQL. Los paneles de serie temporal usan TraceQL metrics y dependen de soporte en tu versión de Grafana/Tempo.
+
+## Métricas desde trazas
+
+Tracing y métricas se complementan. Un patrón profesional es generar métricas RED desde spans:
+
+- **Rate**: requests por segundo.
+- **Errors**: tasa de errores.
+- **Duration**: latencia.
+
+Puedes obtenerlas de tres formas:
+
+- instrumentando métricas directamente en la aplicación,
+- usando span metrics en el collector,
+- usando capacidades de métricas desde trazas en Tempo.
+
+Ejemplos de métricas derivadas útiles:
+
+```text
+traces_service_graph_request_total
+traces_spanmetrics_latency_bucket
+traces_spanmetrics_calls_total
+```
+
+Si usas Prometheus junto a Tempo, puedes construir dashboards mixtos:
+
+- Prometheus para series temporales estables,
+- Tempo para drill-down a trazas concretas,
+- Loki para logs relacionados por `trace_id`.
+
+## Correlación logs, métricas y trazas
+
+Un incidente típico:
+
+```text
+Prometheus alerta: p95 alto en checkout-api
+Grafana muestra panel de latencia
+Tempo filtra trazas lentas de checkout-api
+La traza muestra lentitud en postgres
+Loki abre logs con el mismo trace_id
+```
+
+Para que esto funcione:
+
+- las métricas deben incluir `service_name` o equivalente,
+- los logs deben incluir `trace_id`,
+- las trazas deben tener `service.name` correcto,
+- Grafana debe tener enlaces entre datasources.
+
+En logs JSON:
+
+```json
+{"level":"error","message":"database timeout","trace_id":"4bf92f3577b34da6a3ce929d0e0e4736","service_name":"checkout-api"}
+```
+
+En trazas:
+
+```text
+resource.service.name = checkout-api
+trace_id = 4bf92f3577b34da6a3ce929d0e0e4736
+```
+
+## Sampling
+
+No siempre puedes guardar todas las trazas. Estrategias comunes:
+
+- **Head sampling**: decide al inicio si una traza se conserva.
+- **Tail sampling**: decide al final según duración, error u otros atributos.
+- **Probabilistic sampling**: conserva un porcentaje.
+- **Always sample errors**: conserva trazas con errores.
+
+Recomendación:
+
+- En desarrollo, samplea todo.
+- En producción, conserva errores y trazas lentas.
+- Documenta la política para que los equipos entiendan qué trazas pueden faltar.
+
+El sampling mal diseñado puede ocultar el incidente que intentas investigar.
+
+## Debugging
+
+Ver readiness de Tempo:
+
+```bash
+curl -s http://localhost:3200/ready
+```
+
+Ver métricas de Tempo:
+
+```bash
+curl -s http://localhost:3200/metrics
+```
+
+Logs:
+
+```bash
+docker compose logs -f tempo
+docker compose logs -f alloy
+docker compose logs -f grafana
+```
+
+Probar conectividad OTLP HTTP:
+
+```bash
+curl -v http://localhost:4318/
+```
+
+Problemas frecuentes:
+
+- La app envía OTLP gRPC al puerto HTTP.
+- La app envía OTLP HTTP al puerto gRPC.
+- Falta `OTEL_SERVICE_NAME`.
+- El collector recibe trazas pero no las exporta a Tempo.
+- Grafana apunta al puerto equivocado de Tempo.
+- Las queries TraceQL filtran atributos que la app no emite.
+- Sampling elimina las trazas que esperabas ver.
+
+## Checklist profesional
+
+- Todas las apps tienen `service.name`.
+- Los entornos usan `deployment.environment`.
+- Se propaga contexto entre servicios.
+- Los logs incluyen `trace_id`.
+- Los datos sensibles no se guardan como atributos.
+- El collector está configurado como código.
+- Hay política de sampling documentada.
+- Tempo usa almacenamiento persistente o de objetos.
+- Grafana tiene datasource provisionado.
+- El dashboard está versionado como JSON.
+- Hay rutas de investigación entre métricas, logs y trazas.
+
+## Glosario
+
+**Trace**: recorrido completo de una operación distribuida.
+
+**Span**: unidad de trabajo dentro de una traza.
+
+**Trace ID**: identificador común de todos los spans de una traza.
+
+**Span ID**: identificador único de un span.
+
+**OTLP**: protocolo de OpenTelemetry para enviar telemetría.
+
+**OpenTelemetry**: estándar abierto para instrumentación y recolección de telemetría.
+
+**Tempo**: backend de trazas de Grafana Labs.
+
+**TraceQL**: lenguaje de consulta de Tempo.
+
+**Sampling**: proceso de decidir qué trazas se conservan.
+
+**Service graph**: representación de llamadas entre servicios basada en trazas.
+
+**Collector**: proceso que recibe, procesa y exporta telemetría.
+
+## Referencias oficiales
+
+- [Grafana Tempo documentation](https://grafana.com/docs/tempo/latest/)
+- [TraceQL documentation](https://grafana.com/docs/tempo/latest/traceql/)
+- [Tempo configuration](https://grafana.com/docs/tempo/latest/configuration/)
+- [OpenTelemetry documentation](https://opentelemetry.io/docs/)
+- [Grafana Alloy OpenTelemetry components](https://grafana.com/docs/alloy/latest/reference/components/otelcol/)
+- [Grafana dashboard JSON model](https://grafana.com/docs/grafana/latest/visualizations/dashboards/build-dashboards/view-dashboard-json-model/)
+
+## Cierre
+
+Las trazas son más útiles cuando no viven aisladas. Tempo te da el backend y TraceQL te permite investigar patrones, pero el valor real aparece cuando las apps propagan contexto, los logs incluyen `trace_id`, las métricas alertan sobre síntomas y Grafana conecta todo en un flujo de investigación. Un buen dashboard de tracing no reemplaza Explore: te lleva rápido a las trazas que merece la pena inspeccionar.
