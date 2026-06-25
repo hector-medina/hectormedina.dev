@@ -1,3 +1,8 @@
+## 1.3.0 (2026-06-25)
+
+* Merge pull request #4 from hector-medina/feat/add-blog-git ([f655c3f](https://github.com/hector-medina/hectormedina.dev/commit/f655c3f)), closes [#4](https://github.com/hector-medina/hectormedina.dev/issues/4)
+* feat(blog): add blogs ([4f6acf8](https://github.com/hector-medina/hectormedina.dev/commit/4f6acf8))
+
 ## 1.2.0 (2026-06-25)
 
 * Merge pull request #3 from hector-medina/feat/add-blog-git ([dc00b6a](https://github.com/hector-medina/hectormedina.dev/commit/dc00b6a)), closes [#3](https://github.com/hector-medina/hectormedina.dev/issues/3)
