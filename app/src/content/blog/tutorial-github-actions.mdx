@@ -1,0 +1,879 @@
+---
+title: "GitHub Actions para profesionales: CI/CD práctico de principio a fin"
+description: "Una guía práctica para dominar GitHub Actions: workflows, jobs, steps, runners, triggers, matrices, cache, artifacts, secrets, environments, despliegues y reusable workflows."
+pubDate: "2025-12-07"
+category: "DevOps"
+tags: ["github-actions", "ci-cd", "devops", "automation", "security"]
+---
+
+GitHub Actions es la plataforma de automatización integrada en GitHub. Permite ejecutar CI/CD, validaciones, despliegues, tareas programadas, generación de releases, publicación de paquetes y automatización operativa directamente desde el repositorio.
+
+Este tutorial tiene un enfoque eminentemente práctico: construirás workflows reales, entenderás la sintaxis que importa y verás patrones que un equipo profesional debería aplicar desde el primer día.
+
+## Modelo mental de GitHub Actions
+
+Un workflow de GitHub Actions es un archivo YAML guardado en `.github/workflows/`. Cada workflow define cuándo se ejecuta, qué trabajos contiene y qué pasos corre cada trabajo.
+
+Las piezas principales son:
+
+- **Workflow**: automatización completa definida en un archivo `.yml` o `.yaml`.
+- **Event**: evento que dispara el workflow, como `push`, `pull_request`, `workflow_dispatch` o `schedule`.
+- **Job**: unidad de ejecución dentro de un workflow. Los jobs pueden correr en paralelo o depender unos de otros.
+- **Step**: instrucción concreta dentro de un job. Puede ejecutar un comando con `run` o usar una action con `uses`.
+- **Action**: componente reutilizable publicado en Marketplace, en otro repositorio o dentro del mismo repositorio.
+- **Runner**: máquina donde se ejecuta el job. Puede ser hospedada por GitHub o self-hosted.
+- **Context**: objeto con información dinámica del workflow, como `github`, `env`, `secrets`, `matrix`, `inputs` o `needs`.
+- **Secret**: valor sensible cifrado, como tokens, claves o credenciales.
+- **Artifact**: archivo generado por un workflow y guardado para descarga o uso posterior.
+- **Environment**: entorno de despliegue con protecciones, aprobaciones y secrets específicos.
+
+El flujo básico es:
+
+```text
+evento en GitHub
+workflow
+jobs
+steps
+logs
+resultado
+```
+
+## Crear tu primer workflow
+
+En la raíz del repositorio, crea esta estructura:
+
+```bash
+mkdir -p .github/workflows
+touch .github/workflows/ci.yml
+```
+
+Un workflow mínimo:
+
+```yaml
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Print context
+        run: |
+          echo "Repository: ${{ github.repository }}"
+          echo "Branch: ${{ github.ref_name }}"
+          echo "Actor: ${{ github.actor }}"
+```
+
+Este workflow se ejecuta cuando hay un `push` a `main` o cuando se abre o actualiza un pull request contra `main`.
+
+Buenas prácticas desde el primer archivo:
+
+- Usa `permissions` explícito. No concedas permisos por defecto si no los necesitas.
+- Nombra workflows, jobs y steps con claridad.
+- Usa actions versionadas, por ejemplo `actions/checkout@v4`.
+- Mantén el YAML pequeño al principio y crece por necesidad real.
+
+## Triggers: cuándo se ejecuta un workflow
+
+La clave `on` define los eventos que disparan la automatización.
+
+Ejecutar en cada push:
+
+```yaml
+on: push
+```
+
+Ejecutar en push y pull request:
+
+```yaml
+on:
+  push:
+  pull_request:
+```
+
+Filtrar por rama:
+
+```yaml
+on:
+  push:
+    branches:
+      - main
+      - "release/**"
+```
+
+Filtrar por rutas:
+
+```yaml
+on:
+  pull_request:
+    paths:
+      - "app/**"
+      - ".github/workflows/**"
+```
+
+Ejecutar manualmente desde la pestaña Actions:
+
+```yaml
+on:
+  workflow_dispatch:
+```
+
+Ejecutar por calendario con cron:
+
+```yaml
+on:
+  schedule:
+    - cron: "0 6 * * 1"
+```
+
+Ese ejemplo corre los lunes a las 06:00 UTC.
+
+Trigger manual con inputs:
+
+```yaml
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Target environment"
+        required: true
+        type: choice
+        options:
+          - staging
+          - production
+```
+
+Uso del input:
+
+```yaml
+run: echo "Deploying to ${{ inputs.environment }}"
+```
+
+## Jobs y steps
+
+Un workflow puede tener uno o varios jobs. Por defecto, los jobs corren en paralelo.
+
+```yaml
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: npm ci
+      - run: npm run lint
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: npm ci
+      - run: npm test
+```
+
+Si un job depende de otro, usa `needs`:
+
+```yaml
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "Run tests"
+
+  build:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "Build only if tests passed"
+```
+
+`needs` también permite leer outputs de otros jobs, útil para versionado, despliegues condicionales y pipelines con promoción entre entornos.
+
+## CI profesional para Node.js
+
+Ejemplo completo para una aplicación Node.js:
+
+```yaml
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quality:
+    name: Quality
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Test
+        run: npm test
+
+      - name: Build
+        run: npm run build
+```
+
+Puntos importantes:
+
+- `npm ci` es preferible en CI porque instala desde `package-lock.json` de forma reproducible.
+- `timeout-minutes` evita jobs colgados consumiendo minutos.
+- `concurrency` cancela ejecuciones antiguas de la misma rama.
+- `cache: npm` acelera instalaciones sin comprometer reproducibilidad.
+
+## Matrix builds
+
+Una matrix ejecuta el mismo job con varias combinaciones de parámetros.
+
+```yaml
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version: [20, 22]
+        os: [ubuntu-latest, macos-latest]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: npm
+
+      - run: npm ci
+      - run: npm test
+```
+
+Usa matrix cuando realmente necesites validar compatibilidad. No conviertas cada workflow en una explosión combinatoria porque encarece y ralentiza la entrega.
+
+## Variables, contexts y expressions
+
+GitHub Actions tiene varias capas de datos dinámicos.
+
+Variables de entorno del workflow:
+
+```yaml
+env:
+  NODE_ENV: test
+  FORCE_COLOR: "1"
+```
+
+Variables de entorno en un job:
+
+```yaml
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    env:
+      API_URL: https://api.example.com
+```
+
+Variables en un step:
+
+```yaml
+steps:
+  - name: Run integration test
+    env:
+      API_TOKEN: ${{ secrets.API_TOKEN }}
+    run: npm run test:integration
+```
+
+Contexts comunes:
+
+```yaml
+run: |
+  echo "Repository: ${{ github.repository }}"
+  echo "Commit: ${{ github.sha }}"
+  echo "Branch: ${{ github.ref_name }}"
+  echo "Run ID: ${{ github.run_id }}"
+```
+
+Condiciones con expressions:
+
+```yaml
+if: github.ref == 'refs/heads/main'
+```
+
+Condición por evento:
+
+```yaml
+if: github.event_name == 'pull_request'
+```
+
+Condición por resultado de un job anterior:
+
+```yaml
+if: needs.test.result == 'success'
+```
+
+Regla práctica: usa expressions para controlar flujo, pero evita lógica de negocio compleja dentro del YAML. Si la lógica crece, muévela a scripts versionados.
+
+## Secrets y seguridad
+
+Los secrets se configuran en GitHub, no se escriben en el repositorio.
+
+Ejemplo de uso:
+
+```yaml
+steps:
+  - name: Publish package
+    env:
+      NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+    run: npm publish
+```
+
+Buenas prácticas:
+
+- Nunca imprimas secrets en logs.
+- No uses secrets en workflows ejecutados desde forks sin entender el modelo de seguridad.
+- Prefiere OIDC para cloud providers en lugar de credenciales estáticas.
+- Limita `permissions` al mínimo necesario.
+- Separa secrets por environment cuando haya staging y production.
+- Rota tokens y elimina secrets que ya no se usan.
+
+Permisos mínimos para un workflow de lectura:
+
+```yaml
+permissions:
+  contents: read
+```
+
+Permisos para publicar en GitHub Packages:
+
+```yaml
+permissions:
+  contents: read
+  packages: write
+```
+
+Permisos para crear un release:
+
+```yaml
+permissions:
+  contents: write
+```
+
+No copies `permissions: write-all` por comodidad. En CI/CD profesional, los permisos son parte del diseño de seguridad.
+
+## Artifacts
+
+Los artifacts sirven para guardar archivos generados por un workflow: builds, reportes de coverage, binarios, logs o paquetes.
+
+Subir artifact:
+
+```yaml
+steps:
+  - name: Build
+    run: npm run build
+
+  - name: Upload build
+    uses: actions/upload-artifact@v4
+    with:
+      name: app-build
+      path: dist/
+```
+
+Descargar artifact en otro job:
+
+```yaml
+steps:
+  - name: Download build
+    uses: actions/download-artifact@v4
+    with:
+      name: app-build
+      path: dist/
+```
+
+Los artifacts son útiles para separar build y deploy. Construyes una vez, despliegas exactamente lo construido.
+
+## Cache
+
+El cache acelera dependencias o compilaciones repetidas.
+
+Con `setup-node`:
+
+```yaml
+- uses: actions/setup-node@v4
+  with:
+    node-version: 22
+    cache: npm
+```
+
+Cache manual:
+
+```yaml
+- name: Cache dependencies
+  uses: actions/cache@v4
+  with:
+    path: ~/.npm
+    key: npm-${{ runner.os }}-${{ hashFiles('**/package-lock.json') }}
+    restore-keys: |
+      npm-${{ runner.os }}-
+```
+
+Buenas prácticas:
+
+- La clave del cache debe incluir archivos lock.
+- No caches `node_modules` si puedes cachear el gestor de paquetes.
+- No guardes secrets en rutas cacheadas.
+- No dependas del cache para que el build funcione; el cache debe optimizar, no corregir.
+
+## Services: bases de datos en CI
+
+Puedes levantar contenedores de servicio para tests de integración.
+
+Ejemplo con PostgreSQL:
+
+```yaml
+jobs:
+  integration:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: app
+          POSTGRES_PASSWORD: app
+          POSTGRES_DB: app_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      DATABASE_URL: postgres://app:app@localhost:5432/app_test
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run test:integration
+```
+
+Esto evita depender de una base de datos compartida para correr tests. Cada ejecución tiene infraestructura efímera y reproducible.
+
+## Deploy con environments
+
+Los environments permiten modelar `staging`, `production` u otros destinos con secrets, variables y reglas de protección.
+
+Ejemplo de deploy a staging:
+
+```yaml
+name: Deploy
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  deploy-staging:
+    name: Deploy staging
+    runs-on: ubuntu-latest
+    environment: staging
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Deploy
+        env:
+          DEPLOY_TOKEN: ${{ secrets.DEPLOY_TOKEN }}
+        run: ./scripts/deploy.sh staging
+```
+
+Ejemplo con producción manual:
+
+```yaml
+name: Deploy production
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  deploy-production:
+    runs-on: ubuntu-latest
+    environment: production
+
+    steps:
+      - uses: actions/checkout@v4
+      - run: ./scripts/deploy.sh production
+```
+
+Configura el environment `production` en GitHub con reviewers requeridos. Así, aunque alguien dispare el workflow, el job queda esperando aprobación antes de ejecutar el despliegue.
+
+## Pipeline completo: CI, build y deploy
+
+Un patrón sólido es separar validación, build y despliegue:
+
+```yaml
+name: Pipeline
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pipeline-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run lint
+      - run: npm test
+
+  build:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: production-build
+          path: dist/
+
+  deploy:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: build
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: production-build
+          path: dist/
+      - run: ./scripts/deploy.sh production
+```
+
+Este diseño evita desplegar desde pull requests. Solo despliega cuando el evento es `push` sobre `main` y los jobs anteriores pasaron.
+
+## Reusable workflows
+
+Cuando varios repositorios repiten el mismo pipeline, usa reusable workflows.
+
+Workflow reutilizable:
+
+```yaml
+name: Reusable Node CI
+
+on:
+  workflow_call:
+    inputs:
+      node-version:
+        required: false
+        type: string
+        default: "22"
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node-version }}
+          cache: npm
+      - run: npm ci
+      - run: npm run lint
+      - run: npm test
+```
+
+Workflow consumidor:
+
+```yaml
+name: CI
+
+on:
+  pull_request:
+
+jobs:
+  ci:
+    uses: org/platform-workflows/.github/workflows/node-ci.yml@v1
+    with:
+      node-version: "22"
+```
+
+Buenas prácticas:
+
+- Versiona reusable workflows con tags como `v1`.
+- Define inputs explícitos.
+- No conviertas un reusable workflow en una caja negra imposible de depurar.
+- Documenta qué espera del repositorio consumidor.
+
+## Composite actions
+
+Una composite action encapsula varios pasos en una action local o compartida.
+
+Estructura:
+
+```text
+.github/actions/setup-project/action.yml
+```
+
+Ejemplo:
+
+```yaml
+name: Setup project
+description: Install dependencies for the project
+
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-node@v4
+      with:
+        node-version: 22
+        cache: npm
+
+    - shell: bash
+      run: npm ci
+```
+
+Uso:
+
+```yaml
+steps:
+  - uses: actions/checkout@v4
+  - uses: ./.github/actions/setup-project
+  - run: npm test
+```
+
+Usa composite actions para reutilizar pasos dentro de uno o varios repositorios. Usa reusable workflows cuando quieras reutilizar jobs o pipelines completos.
+
+## Releases y tags
+
+Un patrón frecuente es publicar releases al crear tags.
+
+```yaml
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build
+        run: npm run build
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ github.ref_name }}" \
+            --title "${{ github.ref_name }}" \
+            --notes "Release ${{ github.ref_name }}"
+```
+
+Este workflow solo se ejecuta con tags como `v1.2.3`.
+
+## Debugging y observabilidad
+
+Cuando un workflow falla, trabaja de forma metódica:
+
+```yaml
+- name: Debug basic context
+  run: |
+    echo "event=${{ github.event_name }}"
+    echo "ref=${{ github.ref }}"
+    echo "sha=${{ github.sha }}"
+    pwd
+    ls -la
+```
+
+Consejos:
+
+- Lee el log del primer step que falla, no solo el resumen final.
+- Reproduce localmente el comando que falló.
+- Asegúrate de que `working-directory` apunta al lugar correcto.
+- Comprueba que los secrets existen en el scope correcto: repository, organization o environment.
+- Usa `timeout-minutes` para detectar bloqueos.
+- Divide jobs grandes para saber si falla instalación, test, build o deploy.
+
+No imprimas contexts completos sin revisar su contenido. Algunos contexts pueden incluir información sensible o demasiado ruido.
+
+## Errores comunes
+
+- Usar `pull_request_target` sin entender que corre con permisos del repositorio base.
+- Dar `contents: write` a workflows que solo necesitan leer código.
+- Ejecutar deploys en eventos `pull_request`.
+- No fijar versiones de actions externas.
+- Repetir YAML entre repositorios en lugar de crear reusable workflows.
+- Hacer builds distintos para test y deploy.
+- Guardar secretos en variables de entorno planas dentro del repositorio.
+- Depender de cache para que la instalación funcione.
+- No limitar workflows con `paths` cuando el monorepo lo necesita.
+- No cancelar ejecuciones antiguas con `concurrency`.
+
+## Checklist antes de subir un workflow
+
+- El archivo está en `.github/workflows/`.
+- El YAML es válido y usa indentación consistente.
+- Los triggers son los necesarios, no más.
+- `permissions` está definido con privilegios mínimos.
+- Las actions externas están versionadas.
+- Los secrets no se imprimen en logs.
+- CI usa instalación reproducible, como `npm ci`.
+- Deploy solo ocurre desde ramas o tags autorizados.
+- Producción usa environment con aprobación si el riesgo lo justifica.
+- Hay `timeout-minutes` en jobs críticos.
+- Los artifacts separan build y deploy cuando aplica.
+
+## Chuleta de sintaxis
+
+| Objetivo | Sintaxis |
+| --- | --- |
+| Workflow manual | `on: workflow_dispatch` |
+| Push a main | `on.push.branches: [main]` |
+| Job dependiente | `needs: test` |
+| Runner Ubuntu | `runs-on: ubuntu-latest` |
+| Ejecutar comando | `run: npm test` |
+| Usar action | `uses: actions/checkout@v4` |
+| Variable global | `env:` |
+| Secret | `${{ secrets.NOMBRE }}` |
+| Rama actual | `${{ github.ref_name }}` |
+| SHA actual | `${{ github.sha }}` |
+| Matrix | `strategy.matrix` |
+| Environment | `environment: production` |
+| Cancelar duplicados | `concurrency.cancel-in-progress: true` |
+| Artifact | `actions/upload-artifact@v4` |
+| Reusable workflow | `on: workflow_call` |
+
+## Glosario
+
+**Action**: unidad reutilizable que encapsula lógica de automatización. Puede venir de Marketplace, de otro repositorio o del propio repositorio.
+
+**Artifact**: archivo producido por un workflow y almacenado por GitHub Actions para descarga o consumo posterior.
+
+**Cache**: almacenamiento reutilizable para acelerar instalaciones o builds entre ejecuciones.
+
+**CI**: continuous integration. Validación automática de cambios mediante linting, tests, builds y análisis.
+
+**CD**: continuous delivery o continuous deployment. Automatización del empaquetado y despliegue de software.
+
+**Concurrency**: configuración que controla ejecuciones simultáneas y permite cancelar runs antiguos.
+
+**Context**: objeto dinámico disponible durante la ejecución, como `github`, `secrets`, `matrix`, `runner`, `inputs` o `needs`.
+
+**Environment**: destino de despliegue con secrets, variables y reglas de protección.
+
+**Event**: actividad que dispara un workflow, por ejemplo `push`, `pull_request`, `schedule` o `workflow_dispatch`.
+
+**Expression**: sintaxis `${{ ... }}` usada para evaluar valores, condiciones y contexts.
+
+**Job**: conjunto de steps ejecutados en un runner.
+
+**Matrix**: estrategia para ejecutar un job con varias combinaciones de parámetros.
+
+**OIDC**: OpenID Connect. Mecanismo recomendado para autenticarse contra clouds sin guardar credenciales estáticas de larga duración.
+
+**Permissions**: permisos concedidos al `GITHUB_TOKEN` del workflow o job.
+
+**Runner**: máquina que ejecuta un job. Puede ser GitHub-hosted o self-hosted.
+
+**Secret**: valor cifrado gestionado por GitHub para no escribir credenciales en el repositorio.
+
+**Service container**: contenedor auxiliar usado por un job, por ejemplo PostgreSQL o Redis para tests.
+
+**Step**: instrucción individual dentro de un job.
+
+**Workflow**: automatización definida como archivo YAML dentro de `.github/workflows/`.
+
+**Workflow call**: evento que permite llamar un workflow desde otro workflow.
+
+**Workflow dispatch**: evento que permite ejecutar un workflow manualmente.
+
+## Referencias oficiales
+
+- [Workflow syntax for GitHub Actions](https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax)
+- [Contexts reference](https://docs.github.com/en/actions/reference/workflows-and-actions/contexts)
+- [Using secrets in GitHub Actions](https://docs.github.com/en/actions/how-tos/write-workflows/choose-what-workflows-do/use-secrets)
+- [Reuse workflows](https://docs.github.com/en/actions/how-tos/reuse-automations/reuse-workflows)
+
+## Cierre
+
+GitHub Actions no es solo "un YAML que corre tests". Bien diseñado, es la columna vertebral operativa del repositorio: valida cambios, protege ramas, genera artifacts, despliega con control, reduce trabajo manual y deja trazabilidad. La clave profesional está en combinar simplicidad, permisos mínimos, workflows pequeños, feedback rápido y despliegues reproducibles.

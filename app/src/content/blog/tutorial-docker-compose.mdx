@@ -1,0 +1,1168 @@
+---
+title: "Docker Compose para profesionales: tutorial práctico de principio a fin"
+description: "Una guía práctica para dominar Docker Compose: servicios, redes, volúmenes, variables, perfiles, healthchecks, overrides, secrets, watch, debugging y flujos profesionales."
+pubDate: "2026-02-01"
+category: "DevOps"
+tags: ["docker-compose", "docker", "containers", "devops", "local-development"]
+---
+
+Docker Compose permite definir y ejecutar aplicaciones multi-contenedor con un archivo YAML. Es una herramienta clave para desarrollo local, integración, demos, entornos efímeros, pruebas de servicios dependientes y workflows de equipo.
+
+Este tutorial es eminentemente práctico: vas a construir un entorno completo con API, base de datos, Redis, worker, herramientas de administración, volúmenes, redes, variables de entorno, perfiles, healthchecks, overrides y comandos profesionales de operación.
+
+## Modelo mental de Docker Compose
+
+Compose no reemplaza a Docker. Compose orquesta varios contenedores Docker como una aplicación lógica.
+
+Las piezas principales son:
+
+- **Project**: nombre lógico de la aplicación Compose. Agrupa servicios, redes, volúmenes y contenedores.
+- **Service**: definición de un contenedor o conjunto de contenedores equivalentes.
+- **Container**: instancia concreta creada a partir de un service.
+- **Compose file**: archivo YAML, normalmente `compose.yml`, que define la aplicación.
+- **Network**: red virtual donde los services se resuelven por nombre.
+- **Volume**: almacenamiento persistente gestionado por Docker.
+- **Bind mount**: montaje de una carpeta del host dentro del contenedor.
+- **Environment variable**: variable inyectada en el contenedor o usada para interpolar el YAML.
+- **Profile**: mecanismo para activar servicios opcionales.
+- **Healthcheck**: prueba que indica si un servicio está realmente listo.
+
+El flujo básico es:
+
+```text
+compose.yml
+docker compose config
+docker compose up
+docker compose ps
+docker compose logs
+docker compose exec
+docker compose down
+```
+
+## Compose moderno
+
+Usa el comando moderno:
+
+```bash
+docker compose version
+```
+
+Evita el binario legacy salvo que estés manteniendo un entorno antiguo:
+
+```bash
+docker-compose version
+```
+
+La forma actual recomendada es `docker compose`, como subcomando del Docker CLI.
+
+Tampoco necesitas declarar `version:` en `compose.yml` para proyectos nuevos. Compose moderno se basa en la **Compose Specification**, que unifica los formatos antiguos `2.x` y `3.x`.
+
+## Crear un proyecto desde cero
+
+Estructura inicial:
+
+```text
+myapp/
+  compose.yml
+  Dockerfile
+  package.json
+  package-lock.json
+  src/
+  scripts/
+```
+
+Crea `compose.yml`:
+
+```yaml
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "3000:3000"
+    environment:
+      NODE_ENV: development
+      PORT: 3000
+    command: npm run dev
+```
+
+Levanta el proyecto:
+
+```bash
+docker compose up
+```
+
+Levanta en segundo plano:
+
+```bash
+docker compose up -d
+```
+
+Ver servicios:
+
+```bash
+docker compose ps
+```
+
+Ver logs:
+
+```bash
+docker compose logs -f
+docker compose logs -f api
+```
+
+Entrar al contenedor:
+
+```bash
+docker compose exec api sh
+```
+
+Apagar:
+
+```bash
+docker compose down
+```
+
+## Services
+
+Un service define cómo se crea y ejecuta un contenedor.
+
+Ejemplo completo:
+
+```yaml
+services:
+  api:
+    image: ghcr.io/acme/myapp:dev
+    container_name: myapp-api
+    ports:
+      - "3000:3000"
+    environment:
+      NODE_ENV: development
+      PORT: 3000
+    working_dir: /app
+    command: npm run dev
+    restart: unless-stopped
+```
+
+Campos comunes:
+
+- `image`: imagen que se usará.
+- `build`: cómo construir la imagen localmente.
+- `ports`: puertos publicados al host.
+- `environment`: variables dentro del contenedor.
+- `env_file`: archivo con variables.
+- `volumes`: mounts y volúmenes.
+- `networks`: redes a las que se conecta el servicio.
+- `depends_on`: dependencias entre servicios.
+- `command`: sobrescribe el `CMD` de la imagen.
+- `entrypoint`: sobrescribe el `ENTRYPOINT`.
+- `restart`: política de reinicio.
+
+Regla profesional: el `compose.yml` debe describir el entorno, no esconder lógica de negocio. Si un comando se vuelve complejo, muévelo a `scripts/`.
+
+## Build vs image
+
+Usa `build` cuando quieres construir una imagen desde código local:
+
+```yaml
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: ghcr.io/acme/myapp:dev
+```
+
+Usa `image` cuando quieres consumir una imagen ya publicada:
+
+```yaml
+services:
+  db:
+    image: postgres:16-alpine
+```
+
+Puedes combinar `build` e `image`: Compose construye localmente y etiqueta la imagen con ese nombre.
+
+Reconstruir:
+
+```bash
+docker compose build
+docker compose up --build
+```
+
+Reconstruir sin cache:
+
+```bash
+docker compose build --no-cache api
+```
+
+Construir un solo service:
+
+```bash
+docker compose build api
+```
+
+## Aplicación real: API, Postgres y Redis
+
+Un entorno típico de backend:
+
+```yaml
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "3000:3000"
+    environment:
+      NODE_ENV: development
+      PORT: 3000
+      DATABASE_URL: postgres://app:app@postgres:5432/app
+      REDIS_URL: redis://redis:6379
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    volumes:
+      - .:/app
+      - node_modules:/app/node_modules
+    command: npm run dev
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: app
+      POSTGRES_PASSWORD: app
+      POSTGRES_DB: app
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U app -d app"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  redis:
+    image: redis:7-alpine
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data:/data
+
+volumes:
+  node_modules:
+  postgres_data:
+  redis_data:
+```
+
+Levantar todo:
+
+```bash
+docker compose up --build
+```
+
+Ejecutar migraciones:
+
+```bash
+docker compose exec api npm run db:migrate
+```
+
+Ejecutar tests:
+
+```bash
+docker compose exec api npm test
+```
+
+Apagar conservando datos:
+
+```bash
+docker compose down
+```
+
+Apagar borrando datos persistentes:
+
+```bash
+docker compose down -v
+```
+
+Usa `down -v` con cuidado: elimina volúmenes del proyecto, incluyendo bases de datos locales.
+
+## Resolución DNS entre servicios
+
+En Compose, los services comparten una red por defecto y pueden resolverse por nombre.
+
+Si tienes:
+
+```yaml
+services:
+  api:
+    environment:
+      DATABASE_URL: postgres://app:app@postgres:5432/app
+
+  postgres:
+    image: postgres:16-alpine
+```
+
+La API debe conectarse a `postgres`, no a `localhost`.
+
+Dentro del contenedor:
+
+```text
+localhost = el propio contenedor
+postgres = el service postgres
+host.docker.internal = el host, en Docker Desktop y entornos compatibles
+```
+
+Error común: configurar `DATABASE_URL=postgres://app:app@localhost:5432/app` dentro de `api`. Eso intenta conectar contra la propia API, no contra la base de datos.
+
+## Puertos
+
+Publicar puerto al host:
+
+```yaml
+services:
+  api:
+    ports:
+      - "3000:3000"
+```
+
+Formato:
+
+```text
+host:container
+```
+
+Publicar solo en localhost:
+
+```yaml
+services:
+  postgres:
+    ports:
+      - "127.0.0.1:5432:5432"
+```
+
+Esto evita exponer Postgres en todas las interfaces de red del host.
+
+No publiques puertos internos si solo los consumen otros contenedores. Por ejemplo, Redis no necesita `ports` si solo lo usa `api` dentro de la red Compose.
+
+## Volúmenes y bind mounts
+
+Bind mount para desarrollo:
+
+```yaml
+services:
+  api:
+    volumes:
+      - .:/app
+```
+
+Volumen nombrado para persistencia:
+
+```yaml
+services:
+  postgres:
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+volumes:
+  postgres_data:
+```
+
+Volumen nombrado para evitar sobrescribir dependencias dentro del contenedor:
+
+```yaml
+services:
+  api:
+    volumes:
+      - .:/app
+      - node_modules:/app/node_modules
+
+volumes:
+  node_modules:
+```
+
+Cuándo usar cada uno:
+
+- **Bind mount**: código fuente en desarrollo.
+- **Volume**: datos persistentes gestionados por Docker.
+- **tmpfs**: datos temporales que no deben escribirse a disco.
+
+Ejemplo con `tmpfs`:
+
+```yaml
+services:
+  api:
+    tmpfs:
+      - /tmp
+```
+
+## Redes
+
+Compose crea una red por defecto, pero puedes definir redes explícitas para separar tráfico.
+
+```yaml
+services:
+  api:
+    networks:
+      - frontend
+      - backend
+
+  postgres:
+    networks:
+      - backend
+
+  redis:
+    networks:
+      - backend
+
+networks:
+  frontend:
+  backend:
+    internal: true
+```
+
+Con `internal: true`, la red queda pensada para comunicación interna entre servicios. Es útil para separar una capa backend que no debe exponerse al exterior.
+
+Inspeccionar redes:
+
+```bash
+docker compose ps
+docker network ls
+docker network inspect myapp_backend
+```
+
+El nombre real de la red suele incluir el project name como prefijo.
+
+## Project name
+
+Compose agrupa recursos por project name. Si estás en una carpeta `myapp`, probablemente los recursos se llamen `myapp_api_1`, `myapp_postgres_1`, `myapp_default`, etc.
+
+Definir project name por comando:
+
+```bash
+docker compose --project-name myapp up -d
+```
+
+Definir por variable:
+
+```bash
+COMPOSE_PROJECT_NAME=myapp docker compose up -d
+```
+
+Definir en el archivo:
+
+```yaml
+name: myapp
+
+services:
+  api:
+    image: nginx:1.27-alpine
+```
+
+Usa project names estables en CI o cuando varios stacks conviven en la misma máquina.
+
+## Variables de entorno e interpolación
+
+Compose usa variables de dos formas distintas:
+
+- Para interpolar valores dentro del YAML.
+- Para inyectar variables dentro del contenedor.
+
+Archivo `.env` junto al `compose.yml`:
+
+```dotenv
+APP_PORT=3000
+POSTGRES_PASSWORD=app
+```
+
+Uso en `compose.yml`:
+
+```yaml
+services:
+  api:
+    ports:
+      - "${APP_PORT}:3000"
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+```
+
+Valor por defecto:
+
+```yaml
+services:
+  api:
+    environment:
+      NODE_ENV: ${NODE_ENV:-development}
+```
+
+Variable obligatoria:
+
+```yaml
+services:
+  api:
+    environment:
+      API_TOKEN: ${API_TOKEN:?API_TOKEN is required}
+```
+
+Usar `env_file` para el entorno del contenedor:
+
+```yaml
+services:
+  api:
+    env_file:
+      - .env
+```
+
+Punto importante: `.env` para interpolación y `env_file` para inyectar variables al contenedor son conceptos relacionados, pero no idénticos.
+
+Buenas prácticas:
+
+- Versiona `.env.example`, no `.env` con secretos reales.
+- Usa valores por defecto para desarrollo.
+- Falla rápido con `${VAR:?message}` cuando una variable es obligatoria.
+- No metas secretos reales en el repositorio.
+
+## Secrets en Compose
+
+Para desarrollo local, Compose puede montar secrets desde archivos.
+
+Estructura:
+
+```text
+secrets/
+  postgres_password.txt
+```
+
+`compose.yml`:
+
+```yaml
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: app
+      POSTGRES_DB: app
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
+    secrets:
+      - postgres_password
+
+secrets:
+  postgres_password:
+    file: ./secrets/postgres_password.txt
+```
+
+No todos los programas soportan variables `*_FILE`, pero muchas imágenes oficiales de bases de datos sí. Si tu aplicación no lo soporta, puedes leer el archivo desde `/run/secrets/...` al arrancar.
+
+No confundas esto con un gestor de secretos de producción. Para producción real, usa el mecanismo del orquestador o del cloud provider.
+
+## `depends_on` y healthchecks
+
+`depends_on` controla orden de arranque, pero lo importante es distinguir "contenedor iniciado" de "servicio listo".
+
+Ejemplo robusto:
+
+```yaml
+services:
+  api:
+    build: .
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: app
+      POSTGRES_PASSWORD: app
+      POSTGRES_DB: app
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U app -d app"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+```
+
+Para una API HTTP:
+
+```yaml
+services:
+  api:
+    build: .
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3000/health"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+```
+
+Los healthchecks no sustituyen retries en la aplicación. Tu app debe tolerar que una dependencia tarde en estar disponible o se reinicie.
+
+## `run` vs `exec`
+
+`exec` corre un comando en un contenedor existente:
+
+```bash
+docker compose exec api npm test
+docker compose exec api sh
+```
+
+`run` crea un contenedor nuevo para ejecutar un comando puntual:
+
+```bash
+docker compose run --rm api npm test
+docker compose run --rm api npm run db:migrate
+```
+
+Uso práctico:
+
+- `exec`: inspeccionar o actuar sobre un servicio ya levantado.
+- `run --rm`: tareas one-off reproducibles, como tests, migraciones o generación de código.
+
+Evita dejar contenedores temporales acumulados:
+
+```bash
+docker compose run --rm api npm test
+```
+
+## Perfiles
+
+Los profiles permiten declarar servicios opcionales que no arrancan por defecto.
+
+Ejemplo con herramientas de debug:
+
+```yaml
+services:
+  api:
+    build: .
+
+  postgres:
+    image: postgres:16-alpine
+
+  adminer:
+    image: adminer:4
+    ports:
+      - "8080:8080"
+    depends_on:
+      - postgres
+    profiles:
+      - debug
+```
+
+Arrancar sin herramientas opcionales:
+
+```bash
+docker compose up
+```
+
+Arrancar con perfil `debug`:
+
+```bash
+docker compose --profile debug up
+```
+
+Variable equivalente:
+
+```bash
+COMPOSE_PROFILES=debug docker compose up
+```
+
+Activar varios perfiles:
+
+```bash
+docker compose --profile debug --profile observability up
+```
+
+Regla profesional: no pongas los servicios centrales bajo profiles. Los profiles son para herramientas opcionales: Adminer, Mailpit, Jaeger, Prometheus local, generadores, seeders o herramientas de inspección.
+
+## Overrides y múltiples archivos
+
+Mantén un `compose.yml` base y usa archivos adicionales para desarrollo, CI o pruebas.
+
+Base:
+
+```yaml
+services:
+  api:
+    image: ghcr.io/acme/myapp:${APP_TAG:-latest}
+    environment:
+      NODE_ENV: production
+```
+
+Override local `compose.dev.yml`:
+
+```yaml
+services:
+  api:
+    build:
+      context: .
+    image: myapp:dev
+    environment:
+      NODE_ENV: development
+    volumes:
+      - .:/app
+    command: npm run dev
+```
+
+Ejecutar ambos:
+
+```bash
+docker compose -f compose.yml -f compose.dev.yml up --build
+```
+
+Ver la configuración resultante:
+
+```bash
+docker compose -f compose.yml -f compose.dev.yml config
+```
+
+`docker compose config` es fundamental: muestra el YAML final después de interpolar variables y combinar archivos.
+
+## Compose Watch
+
+`docker compose watch` observa el contexto de build y reconstruye o refresca servicios cuando cambian archivos.
+
+Ejemplo con Develop Specification:
+
+```yaml
+services:
+  api:
+    build: .
+    develop:
+      watch:
+        - action: sync
+          path: ./src
+          target: /app/src
+        - action: rebuild
+          path: package.json
+```
+
+Ejecutar:
+
+```bash
+docker compose watch
+```
+
+También puedes usar:
+
+```bash
+docker compose up --watch
+```
+
+Cuándo usarlo:
+
+- Desarrollo local donde quieres feedback rápido.
+- Servicios que requieren rebuild cuando cambian dependencias.
+- Equipos que quieren evitar bind mounts complejos en macOS o Windows.
+
+Si tu stack ya funciona bien con bind mounts y hot reload nativo, no metas `watch` por moda. Úsalo cuando simplifique el flujo.
+
+## Escalar servicios
+
+Puedes escalar un service sin puertos publicados fijos:
+
+```bash
+docker compose up --scale worker=3
+```
+
+Ejemplo:
+
+```yaml
+services:
+  worker:
+    build: .
+    command: npm run worker
+    environment:
+      REDIS_URL: redis://redis:6379
+    depends_on:
+      - redis
+
+  redis:
+    image: redis:7-alpine
+```
+
+No escales services que publican el mismo puerto fijo al host:
+
+```yaml
+ports:
+  - "3000:3000"
+```
+
+Tres réplicas intentando usar el mismo puerto `3000` del host producirán conflicto. Para escalar detrás de un proxy, publica solo el proxy y deja los backends en la red interna.
+
+## Logs, eventos y diagnóstico
+
+Ver logs de todo:
+
+```bash
+docker compose logs -f
+```
+
+Ver logs de un servicio:
+
+```bash
+docker compose logs -f api
+```
+
+Ver últimas líneas:
+
+```bash
+docker compose logs --tail 100 api
+```
+
+Ver procesos:
+
+```bash
+docker compose top
+```
+
+Ver consumo:
+
+```bash
+docker compose stats
+```
+
+Ver eventos:
+
+```bash
+docker compose events
+```
+
+Listar contenedores:
+
+```bash
+docker compose ps
+docker compose ps -a
+```
+
+Inspeccionar un contenedor concreto:
+
+```bash
+docker inspect myapp-api-1
+```
+
+Copiar archivos:
+
+```bash
+docker compose cp api:/app/logs ./logs
+```
+
+Validar configuración:
+
+```bash
+docker compose config
+```
+
+El primer comando ante un problema de YAML debería ser `docker compose config`. Si ahí no queda claro el resultado final, el problema no está en Docker sino en la configuración.
+
+## Migraciones, seeds y tareas one-off
+
+Define tareas repetibles:
+
+```yaml
+services:
+  api:
+    build: .
+    environment:
+      DATABASE_URL: postgres://app:app@postgres:5432/app
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: app
+      POSTGRES_PASSWORD: app
+      POSTGRES_DB: app
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U app -d app"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+```
+
+Ejecutar migración:
+
+```bash
+docker compose run --rm api npm run db:migrate
+```
+
+Ejecutar seed:
+
+```bash
+docker compose run --rm api npm run db:seed
+```
+
+Ejecutar tests contra dependencias reales:
+
+```bash
+docker compose run --rm api npm test
+```
+
+Para CI, este patrón reduce diferencias entre entorno local y pipeline.
+
+## Compose en CI
+
+Ejemplo de GitHub Actions con Compose:
+
+```yaml
+name: Integration tests
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build services
+        run: docker compose -f compose.yml -f compose.ci.yml build
+
+      - name: Start dependencies
+        run: docker compose -f compose.yml -f compose.ci.yml up -d postgres redis
+
+      - name: Run migrations
+        run: docker compose -f compose.yml -f compose.ci.yml run --rm api npm run db:migrate
+
+      - name: Run tests
+        run: docker compose -f compose.yml -f compose.ci.yml run --rm api npm test
+
+      - name: Show logs on failure
+        if: failure()
+        run: docker compose -f compose.yml -f compose.ci.yml logs
+
+      - name: Cleanup
+        if: always()
+        run: docker compose -f compose.yml -f compose.ci.yml down -v
+```
+
+Buenas prácticas en CI:
+
+- Usa `down -v` al final para limpiar estado.
+- Muestra logs si falla.
+- Usa project name por build si hay ejecuciones paralelas en el mismo runner.
+- No dependas de servicios compartidos externos para tests reproducibles.
+- Mantén `compose.ci.yml` pequeño y explícito.
+
+Project name único:
+
+```bash
+docker compose --project-name "myapp-${GITHUB_RUN_ID}" up -d
+```
+
+## Seguridad práctica
+
+Compose suele usarse en desarrollo, pero aun así puede filtrar secretos o abrir puertos innecesarios.
+
+Buenas prácticas:
+
+- No publiques bases de datos salvo que necesites acceso desde el host.
+- Usa `127.0.0.1:host:container` si el puerto solo debe estar disponible localmente.
+- No montes `/var/run/docker.sock` salvo que entiendas el riesgo.
+- No uses `privileged: true` para evitar investigar permisos.
+- No metas `.env` con secretos reales en Git.
+- Define usuarios no root en las imágenes.
+- Usa redes internas para dependencias.
+- Revisa `docker compose config` antes de compartir un stack.
+
+Ejemplo de puerto local:
+
+```yaml
+services:
+  postgres:
+    ports:
+      - "127.0.0.1:5432:5432"
+```
+
+Ejemplo de red interna:
+
+```yaml
+networks:
+  backend:
+    internal: true
+```
+
+Ejemplo evitando privilegios:
+
+```yaml
+services:
+  api:
+    read_only: true
+    tmpfs:
+      - /tmp
+```
+
+## Producción: cuándo sí y cuándo no
+
+Compose puede servir para despliegues simples en una VM, demos internas o entornos pequeños. No ofrece por sí solo capacidades completas de orquestación como scheduling distribuido, autoscaling, self-healing avanzado, rollouts complejos o políticas ricas de red.
+
+Usa Compose en producción cuando:
+
+- Tienes una VM o servidor único.
+- El equipo entiende el modelo operativo.
+- Hay backups, logs, monitorización y actualizaciones claras.
+- El riesgo de indisponibilidad está aceptado.
+
+Considera Kubernetes, ECS, Nomad u otro orquestador cuando:
+
+- Necesitas múltiples nodos.
+- Necesitas autoscaling.
+- Necesitas despliegues progresivos.
+- Tienes muchos servicios y equipos.
+- Necesitas políticas avanzadas de red, secretos y scheduling.
+
+Compose es excelente para definir la topología de una app. No lo conviertas en una plataforma de producción improvisada sin controles operativos.
+
+## Flujo profesional recomendado
+
+Para desarrollo diario:
+
+```bash
+docker compose config
+docker compose up --build
+docker compose logs -f api
+docker compose exec api sh
+docker compose exec api npm test
+docker compose down
+```
+
+Para resetear base de datos local:
+
+```bash
+docker compose down -v
+docker compose up -d postgres
+docker compose run --rm api npm run db:migrate
+docker compose run --rm api npm run db:seed
+```
+
+Para debug con herramientas opcionales:
+
+```bash
+docker compose --profile debug up
+```
+
+Para CI:
+
+```bash
+docker compose -f compose.yml -f compose.ci.yml config
+docker compose -f compose.yml -f compose.ci.yml build
+docker compose -f compose.yml -f compose.ci.yml run --rm api npm test
+docker compose -f compose.yml -f compose.ci.yml down -v
+```
+
+## Errores comunes
+
+- Usar `localhost` entre contenedores en lugar del nombre del service.
+- Publicar puertos de bases de datos sin necesidad.
+- Usar `depends_on` sin healthchecks y asumir que la dependencia está lista.
+- Meter secretos reales en `.env` versionado.
+- No usar `docker compose config` para validar el YAML final.
+- Mezclar demasiada lógica en `command`.
+- Usar `container_name` de forma innecesaria y romper escalado.
+- Hacer `down -v` sin entender que borra datos persistentes.
+- Dejar services opcionales siempre activos en lugar de usar profiles.
+- Copiar configuraciones de producción a desarrollo sin adaptar volúmenes, puertos y secrets.
+- Usar Compose como orquestador complejo sin cubrir observabilidad, backup y despliegue.
+
+## Checklist antes de compartir un stack Compose
+
+- El archivo principal se llama `compose.yml` o está documentado.
+- No usa `version:` salvo necesidad heredada.
+- `docker compose config` funciona.
+- Los services tienen nombres claros.
+- Las dependencias críticas tienen healthcheck.
+- Las bases de datos usan volúmenes nombrados.
+- Los puertos publicados son los mínimos.
+- Las variables requeridas fallan rápido con `${VAR:?message}`.
+- Hay `.env.example`.
+- Los secretos reales no están en Git.
+- Los profiles separan herramientas opcionales.
+- Los overrides están documentados.
+- `down -v` no se ejecuta automáticamente sin intención.
+
+## Chuleta de comandos
+
+| Objetivo | Comando |
+| --- | --- |
+| Ver versión | `docker compose version` |
+| Validar configuración | `docker compose config` |
+| Levantar servicios | `docker compose up` |
+| Levantar en background | `docker compose up -d` |
+| Levantar reconstruyendo | `docker compose up --build` |
+| Construir | `docker compose build` |
+| Ver servicios | `docker compose ps` |
+| Ver logs | `docker compose logs -f` |
+| Ver logs de un service | `docker compose logs -f api` |
+| Ejecutar en contenedor existente | `docker compose exec api sh` |
+| Ejecutar tarea one-off | `docker compose run --rm api npm test` |
+| Parar servicios | `docker compose stop` |
+| Apagar y borrar contenedores | `docker compose down` |
+| Apagar y borrar volúmenes | `docker compose down -v` |
+| Usar perfil | `docker compose --profile debug up` |
+| Usar varios archivos | `docker compose -f compose.yml -f compose.dev.yml up` |
+| Escalar service | `docker compose up --scale worker=3` |
+| Ver consumo | `docker compose stats` |
+| Ver eventos | `docker compose events` |
+| Watch | `docker compose watch` |
+
+## Glosario
+
+**Bind mount**: montaje de una ruta del host dentro de un contenedor.
+
+**Compose file**: archivo YAML que define services, networks, volumes, configs, secrets y otros elementos.
+
+**Compose Specification**: especificación moderna del formato Compose.
+
+**Container**: instancia creada a partir de la definición de un service.
+
+**Depends on**: atributo que declara dependencias de arranque entre services.
+
+**Environment interpolation**: sustitución de variables como `${APP_PORT}` dentro del YAML.
+
+**Healthcheck**: prueba usada para determinar si un servicio está saludable.
+
+**Network**: red virtual donde los services se comunican y resuelven nombres.
+
+**Profile**: mecanismo para activar services opcionales bajo demanda.
+
+**Project name**: nombre lógico que Compose usa para agrupar recursos.
+
+**Service**: unidad declarativa que describe cómo ejecutar uno o más contenedores equivalentes.
+
+**Service discovery**: resolución de services por nombre dentro de la red Compose.
+
+**Volume**: almacenamiento persistente gestionado por Docker.
+
+**Override file**: archivo Compose adicional que modifica o amplía la configuración base.
+
+**One-off task**: comando puntual ejecutado con `docker compose run --rm`, como migraciones o tests.
+
+**Watch**: modo que observa cambios de archivos y refresca o reconstruye services.
+
+## Referencias oficiales
+
+- [Compose file reference](https://docs.docker.com/reference/compose-file/)
+- [Environment variables in Compose](https://docs.docker.com/compose/how-tos/environment-variables/)
+- [Using profiles with Compose](https://docs.docker.com/compose/how-tos/profiles/)
+- [Use multiple Compose files](https://docs.docker.com/compose/how-tos/multiple-compose-files/)
+- [docker compose watch](https://docs.docker.com/reference/cli/docker/compose/watch/)
+
+## Cierre
+
+Docker Compose bien usado convierte el entorno de desarrollo en infraestructura versionada. Su valor no está solo en levantar contenedores, sino en hacer explícitas las dependencias, redes, volúmenes, variables, tareas y herramientas que un equipo necesita para trabajar con consistencia. Un buen `compose.yml` reduce fricción, evita documentación frágil y acerca el entorno local al comportamiento real del sistema.

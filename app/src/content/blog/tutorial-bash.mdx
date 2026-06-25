@@ -1,0 +1,1499 @@
+---
+title: "Bash para profesionales: scripting práctico de principio a fin"
+description: "Una guía práctica para dominar Bash: scripts robustos, variables, quoting, argumentos, condicionales, loops, funciones, arrays, redirecciones, traps, debugging, seguridad y CI."
+pubDate: "2026-03-13"
+category: "DevOps"
+tags: ["bash", "shell", "scripting", "devops", "automation"]
+---
+
+Bash es una de las herramientas más rentables para cualquier perfil técnico. Está en servidores, contenedores, pipelines de CI/CD, scripts de despliegue, tareas de mantenimiento, entrypoints de Docker, hooks de Git y automatizaciones locales.
+
+Este tutorial tiene un enfoque eminentemente práctico: escribir scripts que fallen de forma clara, manejen argumentos, procesen ficheros con seguridad, limpien recursos temporales, sean fáciles de depurar y puedan ejecutarse en entornos profesionales.
+
+## Modelo mental de Bash
+
+Bash es un intérprete de comandos y un lenguaje de scripting. Ejecuta programas, expande variables, conecta procesos, redirige entrada y salida, evalúa estados de salida y permite componer herramientas pequeñas.
+
+Conceptos base:
+
+- **Shell**: programa que lee comandos y los ejecuta.
+- **Script**: archivo con comandos ejecutables por la shell.
+- **Builtin**: comando implementado dentro de Bash, como `cd`, `read`, `printf`, `test`, `trap` o `export`.
+- **External command**: binario externo, como `grep`, `awk`, `sed`, `find`, `curl` o `git`.
+- **Exit status**: código de salida de un comando. `0` significa éxito; cualquier otro valor indica error o condición no exitosa.
+- **Pipeline**: cadena de comandos conectados con `|`.
+- **Redirection**: envío de stdout, stderr o stdin a archivos, descriptores o comandos.
+- **Expansion**: sustitución que hace Bash antes de ejecutar un comando: variables, globbing, command substitution, arithmetic expansion, etc.
+- **Quoting**: control de cómo Bash interpreta espacios, caracteres especiales y expansiones.
+
+Regla central: Bash no trabaja con objetos complejos; trabaja con texto, argumentos, ficheros, procesos y códigos de salida.
+
+## Crear un script desde cero
+
+Crea un archivo:
+
+```bash
+touch backup.sh
+chmod +x backup.sh
+```
+
+Contenido mínimo:
+
+```bash
+#!/usr/bin/env bash
+
+echo "Starting backup"
+```
+
+Ejecuta:
+
+```bash
+./backup.sh
+```
+
+El shebang:
+
+```bash
+#!/usr/bin/env bash
+```
+
+usa el primer `bash` disponible en el `PATH`. Es práctico en entornos donde Bash no vive siempre en `/bin/bash`.
+
+Si necesitas una ruta fija por política de sistema:
+
+```bash
+#!/bin/bash
+```
+
+Comprueba versión:
+
+```bash
+bash --version
+```
+
+## Estructura profesional de un script
+
+Plantilla recomendada:
+
+```bash
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+readonly SCRIPT_NAME="$(basename "$0")"
+readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+log() {
+  printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" >&2
+}
+
+die() {
+  printf 'error: %s\n' "$*" >&2
+  exit 1
+}
+
+main() {
+  log "Running ${SCRIPT_NAME}"
+}
+
+main "$@"
+```
+
+Qué aporta:
+
+- `set -E`: hace que `ERR` pueda heredarse en funciones y subshells.
+- `set -e`: intenta salir ante errores no manejados.
+- `set -u`: trata variables no definidas como error.
+- `set -o pipefail`: falla una pipeline si falla cualquier comando relevante.
+- `main "$@"`: evita ejecutar lógica global difícil de testear.
+- `readonly`: protege constantes.
+- `log` y `die`: salida consistente.
+
+`set -e` tiene excepciones importantes. No lo uses como sustituto de manejar errores explícitamente. En condiciones, pipelines complejas y comandos esperados como no exitosos, escribe la intención.
+
+Ejemplo explícito:
+
+```bash
+if ! grep -q "ready" status.txt; then
+  die "service is not ready"
+fi
+```
+
+## Variables
+
+Asignar:
+
+```bash
+name="hector"
+environment="production"
+```
+
+No pongas espacios alrededor de `=`:
+
+```bash
+# Incorrecto
+name = "hector"
+```
+
+Leer:
+
+```bash
+printf 'Deploying to %s\n' "$environment"
+```
+
+Exportar al entorno de procesos hijos:
+
+```bash
+export NODE_ENV=production
+npm run build
+```
+
+Variables de solo lectura:
+
+```bash
+readonly APP_NAME="billing-api"
+```
+
+Valores por defecto:
+
+```bash
+environment="${ENVIRONMENT:-staging}"
+```
+
+Variable obligatoria:
+
+```bash
+api_token="${API_TOKEN:?API_TOKEN is required}"
+```
+
+Asignar valor por defecto a la variable si no existe:
+
+```bash
+: "${LOG_LEVEL:=info}"
+```
+
+## Quoting: la parte que más errores evita
+
+La regla profesional es simple: expande variables entre comillas dobles salvo que tengas una razón concreta para no hacerlo.
+
+Correcto:
+
+```bash
+rm -- "$file"
+cp -- "$source" "$target"
+printf '%s\n' "$message"
+```
+
+Incorrecto:
+
+```bash
+rm -- $file
+cp -- $source $target
+echo $message
+```
+
+Sin comillas, Bash aplica word splitting y globbing. Eso rompe nombres con espacios y puede convertir caracteres como `*` en listas de archivos.
+
+Ejemplo peligroso:
+
+```bash
+file="report final.txt"
+rm -- $file
+```
+
+Bash lo interpreta como dos argumentos:
+
+```text
+report
+final.txt
+```
+
+Con comillas:
+
+```bash
+rm -- "$file"
+```
+
+se conserva como un único argumento.
+
+Comillas simples:
+
+```bash
+printf '%s\n' '$HOME no se expande aquí'
+```
+
+Comillas dobles:
+
+```bash
+printf '%s\n' "$HOME se expande aquí"
+```
+
+## Argumentos posicionales
+
+Un script recibe argumentos como `$1`, `$2`, `$3`, etc.
+
+```bash
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+environment="${1:?usage: deploy.sh environment}"
+version="${2:?usage: deploy.sh environment version}"
+
+printf 'Deploying version %s to %s\n' "$version" "$environment"
+```
+
+Ejecutar:
+
+```bash
+./deploy.sh staging v1.2.3
+```
+
+Variables especiales:
+
+- `$0`: nombre del script.
+- `$1`: primer argumento.
+- `$#`: número de argumentos.
+- `$@`: todos los argumentos, preservando separación cuando se usa como `"$@"`.
+- `$?`: exit status del último comando.
+- `$$`: PID de la shell actual.
+- `$!`: PID del último proceso lanzado en background.
+
+Iterar argumentos:
+
+```bash
+for arg in "$@"; do
+  printf 'arg=%s\n' "$arg"
+done
+```
+
+Evita:
+
+```bash
+for arg in $@; do
+  printf 'arg=%s\n' "$arg"
+done
+```
+
+porque rompe argumentos con espacios.
+
+## Parsear flags con `getopts`
+
+Ejemplo:
+
+```bash
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+environment="staging"
+dry_run=false
+
+usage() {
+  cat <<'EOF'
+usage: deploy.sh [-e environment] [-n]
+
+options:
+  -e  target environment
+  -n  dry run
+EOF
+}
+
+while getopts ":e:nh" opt; do
+  case "$opt" in
+    e)
+      environment="$OPTARG"
+      ;;
+    n)
+      dry_run=true
+      ;;
+    h)
+      usage
+      exit 0
+      ;;
+    :)
+      printf 'error: option -%s requires an argument\n' "$OPTARG" >&2
+      usage >&2
+      exit 2
+      ;;
+    \?)
+      printf 'error: invalid option -%s\n' "$OPTARG" >&2
+      usage >&2
+      exit 2
+      ;;
+  esac
+done
+
+shift "$((OPTIND - 1))"
+
+printf 'environment=%s dry_run=%s\n' "$environment" "$dry_run"
+printf 'remaining args: %s\n' "$*"
+```
+
+Ejecutar:
+
+```bash
+./deploy.sh -e production -n v1.2.3
+```
+
+`getopts` es suficiente para scripts internos. Para CLIs complejas con subcomandos, validaciones ricas y ayuda extensa, considera un lenguaje más adecuado.
+
+## Códigos de salida
+
+Un script profesional debe comunicar éxito o fallo mediante exit status.
+
+```bash
+if curl -fsS "https://example.com/health"; then
+  printf 'healthy\n'
+else
+  printf 'unhealthy\n' >&2
+  exit 1
+fi
+```
+
+Convenciones útiles:
+
+- `0`: éxito.
+- `1`: error general.
+- `2`: error de uso o argumentos inválidos.
+- `126`: comando encontrado pero no ejecutable.
+- `127`: comando no encontrado.
+- `130`: interrumpido por Ctrl-C.
+
+Función `die`:
+
+```bash
+die() {
+  printf 'error: %s\n' "$*" >&2
+  exit 1
+}
+```
+
+Uso:
+
+```bash
+[[ -f "$config_file" ]] || die "config file not found: $config_file"
+```
+
+## Condicionales
+
+Usa `[[ ... ]]` en Bash moderno. Es más seguro y expresivo que `[ ... ]` para muchas condiciones.
+
+```bash
+if [[ "$environment" == "production" ]]; then
+  printf 'production deploy\n'
+fi
+```
+
+Comparar strings:
+
+```bash
+[[ "$name" == "api" ]]
+[[ "$name" != "worker" ]]
+[[ -n "$name" ]]
+[[ -z "$name" ]]
+```
+
+Comparar números:
+
+```bash
+[[ "$count" -eq 0 ]]
+[[ "$count" -gt 10 ]]
+[[ "$count" -le 100 ]]
+```
+
+Comprobar archivos:
+
+```bash
+[[ -f "$path" ]]   # archivo regular
+[[ -d "$path" ]]   # directorio
+[[ -r "$path" ]]   # legible
+[[ -w "$path" ]]   # escribible
+[[ -x "$path" ]]   # ejecutable
+[[ -s "$path" ]]   # existe y no está vacío
+```
+
+Regex:
+
+```bash
+version="v1.2.3"
+
+if [[ "$version" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+  printf 'valid version\n'
+fi
+```
+
+Evita comillar el patrón regex del lado derecho de `=~` si quieres que sea una regex.
+
+## `case`
+
+`case` es ideal para subcomandos, entornos y tipos.
+
+```bash
+command="${1:-}"
+
+case "$command" in
+  start)
+    printf 'starting\n'
+    ;;
+  stop)
+    printf 'stopping\n'
+    ;;
+  restart)
+    printf 'restarting\n'
+    ;;
+  *)
+    printf 'usage: service.sh {start|stop|restart}\n' >&2
+    exit 2
+    ;;
+esac
+```
+
+Para scripts con subcomandos:
+
+```bash
+case "${1:-}" in
+  deploy)
+    shift
+    deploy "$@"
+    ;;
+  rollback)
+    shift
+    rollback "$@"
+    ;;
+  *)
+    usage >&2
+    exit 2
+    ;;
+esac
+```
+
+## Loops
+
+`for` sobre argumentos:
+
+```bash
+for file in "$@"; do
+  printf 'processing %s\n' "$file"
+done
+```
+
+`for` sobre glob:
+
+```bash
+shopt -s nullglob
+
+for file in ./*.log; do
+  gzip -- "$file"
+done
+```
+
+`nullglob` evita que `./*.log` se quede como texto literal cuando no hay matches.
+
+`while` con contador:
+
+```bash
+attempt=1
+
+while [[ "$attempt" -le 5 ]]; do
+  if curl -fsS "http://localhost:3000/health"; then
+    break
+  fi
+
+  printf 'attempt %s failed\n' "$attempt" >&2
+  attempt="$((attempt + 1))"
+  sleep 2
+done
+```
+
+`until`:
+
+```bash
+until pg_isready -h localhost -p 5432; do
+  printf 'waiting for postgres\n' >&2
+  sleep 1
+done
+```
+
+## Leer archivos línea a línea
+
+Patrón seguro:
+
+```bash
+while IFS= read -r line; do
+  printf 'line=%s\n' "$line"
+done < input.txt
+```
+
+Por qué:
+
+- `IFS=` evita recortar espacios al inicio o final.
+- `read -r` evita interpretar backslashes.
+- La redirección al final evita pipelines que crean subshell en muchos casos.
+
+Procesar CSV simple no es lo mismo que parsear CSV real. Si hay comillas, escapes y separadores dentro de campos, usa una herramienta adecuada como Python, Ruby o una librería de CSV.
+
+## Funciones
+
+Definir:
+
+```bash
+log() {
+  printf '[%s] %s\n' "$(date '+%H:%M:%S')" "$*" >&2
+}
+```
+
+Usar:
+
+```bash
+log "starting deployment"
+```
+
+Retornar exit status:
+
+```bash
+service_ready() {
+  curl -fsS "http://localhost:3000/health" >/dev/null
+}
+
+if service_ready; then
+  printf 'ready\n'
+fi
+```
+
+Devolver datos por stdout:
+
+```bash
+current_branch() {
+  git rev-parse --abbrev-ref HEAD
+}
+
+branch="$(current_branch)"
+printf 'branch=%s\n' "$branch"
+```
+
+Variables locales:
+
+```bash
+deploy() {
+  local environment="${1:?environment required}"
+  local version="${2:?version required}"
+
+  printf 'deploying %s to %s\n' "$version" "$environment"
+}
+```
+
+Regla práctica: las funciones deben recibir argumentos, escribir datos por stdout si producen datos, logs por stderr y errores mediante exit status.
+
+## Arrays
+
+Arrays indexados:
+
+```bash
+services=("api" "worker" "scheduler")
+
+for service in "${services[@]}"; do
+  printf 'service=%s\n' "$service"
+done
+```
+
+Añadir elemento:
+
+```bash
+services+=("frontend")
+```
+
+Longitud:
+
+```bash
+printf 'count=%s\n' "${#services[@]}"
+```
+
+Acceder por índice:
+
+```bash
+printf 'first=%s\n' "${services[0]}"
+```
+
+Arrays asociativos:
+
+```bash
+declare -A ports=(
+  [api]=3000
+  [worker]=3001
+)
+
+printf 'api port=%s\n' "${ports[api]}"
+```
+
+Iterar claves:
+
+```bash
+for service in "${!ports[@]}"; do
+  printf '%s -> %s\n' "$service" "${ports[$service]}"
+done
+```
+
+Los arrays son una razón válida para usar Bash en lugar de `sh`.
+
+## Expansión de parámetros
+
+Valores por defecto:
+
+```bash
+name="${NAME:-anonymous}"
+```
+
+Error si falta:
+
+```bash
+token="${TOKEN:?TOKEN is required}"
+```
+
+Longitud:
+
+```bash
+printf 'length=%s\n' "${#name}"
+```
+
+Substring:
+
+```bash
+commit="abcdef123456"
+short="${commit:0:7}"
+```
+
+Eliminar prefijo:
+
+```bash
+path="/var/log/app.log"
+printf '%s\n' "${path#/var/}"
+```
+
+Eliminar sufijo:
+
+```bash
+file="archive.tar.gz"
+printf '%s\n' "${file%.gz}"
+```
+
+Reemplazo:
+
+```bash
+name="feature/login-flow"
+safe_name="${name//\//-}"
+printf '%s\n' "$safe_name"
+```
+
+Mayúsculas y minúsculas:
+
+```bash
+environment="Production"
+printf '%s\n' "${environment,,}"
+printf '%s\n' "${environment^^}"
+```
+
+Estas operaciones evitan procesos externos innecesarios como `sed`, `cut` o `tr` para transformaciones simples.
+
+## Command substitution
+
+Capturar salida:
+
+```bash
+branch="$(git rev-parse --abbrev-ref HEAD)"
+```
+
+Comprueba errores:
+
+```bash
+if ! branch="$(git rev-parse --abbrev-ref HEAD)"; then
+  die "cannot detect git branch"
+fi
+```
+
+Evita backticks:
+
+```bash
+# Evita esto
+branch=`git branch --show-current`
+```
+
+Prefiere:
+
+```bash
+branch="$(git branch --show-current)"
+```
+
+Es más legible y anida mejor.
+
+## Aritmética
+
+```bash
+count=0
+count="$((count + 1))"
+printf 'count=%s\n' "$count"
+```
+
+Condicional aritmético:
+
+```bash
+if (( count > 10 )); then
+  printf 'too many items\n'
+fi
+```
+
+Loop:
+
+```bash
+for ((i = 0; i < 5; i++)); do
+  printf 'i=%s\n' "$i"
+done
+```
+
+No uses Bash para cálculo complejo, decimales o análisis numérico. Usa herramientas adecuadas.
+
+## Redirecciones
+
+Stdout a archivo:
+
+```bash
+command > output.txt
+```
+
+Append:
+
+```bash
+command >> output.txt
+```
+
+Stderr a archivo:
+
+```bash
+command 2> error.log
+```
+
+Stdout y stderr al mismo archivo:
+
+```bash
+command > output.log 2>&1
+```
+
+Forma Bash:
+
+```bash
+command &> output.log
+```
+
+Descartar stdout:
+
+```bash
+command >/dev/null
+```
+
+Descartar stdout y stderr:
+
+```bash
+command >/dev/null 2>&1
+```
+
+El orden importa:
+
+```bash
+command > output.log 2>&1
+```
+
+no es lo mismo que:
+
+```bash
+command 2>&1 > output.log
+```
+
+En el segundo caso, stderr se duplica antes de redirigir stdout, por lo que puede seguir saliendo por la terminal.
+
+## Here-documents
+
+Generar archivo:
+
+```bash
+cat > nginx.conf <<'EOF'
+server {
+  listen 8080;
+  location /health {
+    return 200 "ok\n";
+  }
+}
+EOF
+```
+
+El delimitador quoted `<<'EOF'` evita expansión de variables dentro del bloque.
+
+Con expansión:
+
+```bash
+port="8080"
+
+cat > app.env <<EOF
+PORT=$port
+NODE_ENV=production
+EOF
+```
+
+Para scripts de infraestructura, usa here-docs con cuidado. Si el contenido incluye variables que no deben expandirse localmente, usa delimitador quoted.
+
+## Pipelines
+
+Pipeline simple:
+
+```bash
+docker ps --format '{{.Names}}' | sort
+```
+
+Con `pipefail`:
+
+```bash
+set -o pipefail
+curl -fsS "https://example.com/data.json" | jq .
+```
+
+Sin `pipefail`, una pipeline puede parecer exitosa si el último comando termina bien aunque uno anterior haya fallado.
+
+Capturar salida y filtrar:
+
+```bash
+if docker ps --format '{{.Names}}' | grep -qx "api"; then
+  printf 'api is running\n'
+fi
+```
+
+Si el pipeline es crítico, maneja el error explícitamente:
+
+```bash
+if ! curl -fsS "$url" | jq . >/tmp/response.json; then
+  die "failed to fetch or parse response"
+fi
+```
+
+## `find`, `xargs` y nombres con espacios
+
+Peligroso:
+
+```bash
+find . -name "*.log" | xargs rm
+```
+
+Seguro con null delimiters:
+
+```bash
+find . -name "*.log" -print0 | xargs -0 rm --
+```
+
+O directamente con `find -exec`:
+
+```bash
+find . -name "*.log" -type f -exec rm -- {} +
+```
+
+Para recorrer resultados en Bash:
+
+```bash
+while IFS= read -r -d '' file; do
+  printf 'file=%s\n' "$file"
+done < <(find . -name "*.log" -type f -print0)
+```
+
+Esto soporta espacios, tabs y saltos de línea en nombres de archivo.
+
+## Archivos temporales y limpieza
+
+Usa `mktemp`:
+
+```bash
+tmp_file="$(mktemp)"
+```
+
+Directorio temporal:
+
+```bash
+tmp_dir="$(mktemp -d)"
+```
+
+Limpieza con `trap`:
+
+```bash
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+tmp_dir="$(mktemp -d)"
+
+cleanup() {
+  rm -rf -- "$tmp_dir"
+}
+
+trap cleanup EXIT
+
+printf 'workdir=%s\n' "$tmp_dir"
+```
+
+`trap cleanup EXIT` ejecuta la limpieza al salir, tanto si el script termina bien como si falla.
+
+No uses rutas predecibles como:
+
+```bash
+tmp_file="/tmp/my-script-output"
+```
+
+Pueden causar colisiones, errores o problemas de seguridad.
+
+## Manejo de señales
+
+Capturar Ctrl-C:
+
+```bash
+on_interrupt() {
+  printf 'interrupted\n' >&2
+  exit 130
+}
+
+trap on_interrupt INT
+```
+
+Capturar terminación:
+
+```bash
+on_term() {
+  printf 'terminating\n' >&2
+  exit 143
+}
+
+trap on_term TERM
+```
+
+Combinar con limpieza:
+
+```bash
+cleanup() {
+  rm -rf -- "$tmp_dir"
+}
+
+trap cleanup EXIT
+```
+
+No metas lógica larga y frágil dentro de traps. Deben ser simples, idempotentes y seguras.
+
+## Procesos en background y `wait`
+
+Lanzar procesos:
+
+```bash
+command_a &
+pid_a="$!"
+
+command_b &
+pid_b="$!"
+
+wait "$pid_a"
+status_a="$?"
+
+wait "$pid_b"
+status_b="$?"
+
+if (( status_a != 0 || status_b != 0 )); then
+  exit 1
+fi
+```
+
+Ejemplo práctico:
+
+```bash
+start_service() {
+  npm run dev &
+  service_pid="$!"
+}
+
+cleanup() {
+  if [[ -n "${service_pid:-}" ]]; then
+    kill "$service_pid" 2>/dev/null || true
+  fi
+}
+
+trap cleanup EXIT
+
+start_service
+sleep 5
+npm test
+```
+
+Para paralelismo serio, colas de trabajo o retry policies complejas, usa herramientas especializadas.
+
+## Logging
+
+Logs a stderr:
+
+```bash
+log() {
+  printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" >&2
+}
+```
+
+Niveles:
+
+```bash
+info() {
+  printf 'info: %s\n' "$*" >&2
+}
+
+warn() {
+  printf 'warn: %s\n' "$*" >&2
+}
+
+error() {
+  printf 'error: %s\n' "$*" >&2
+}
+```
+
+Por qué stderr: stdout queda libre para datos que otros comandos puedan consumir.
+
+Ejemplo:
+
+```bash
+get_version() {
+  info "detecting version"
+  git describe --tags --always
+}
+
+version="$(get_version)"
+printf '%s\n' "$version"
+```
+
+## Debugging
+
+Validar sintaxis:
+
+```bash
+bash -n script.sh
+```
+
+Trazar ejecución:
+
+```bash
+bash -x script.sh
+```
+
+Activar xtrace dentro del script:
+
+```bash
+set -x
+command_a
+command_b
+set +x
+```
+
+Personalizar traza:
+
+```bash
+export PS4='+ ${BASH_SOURCE}:${LINENO}:${FUNCNAME[0]:-main}: '
+bash -x script.sh
+```
+
+Enviar xtrace a archivo:
+
+```bash
+exec 9>trace.log
+export BASH_XTRACEFD=9
+set -x
+```
+
+Usar ShellCheck si está disponible:
+
+```bash
+shellcheck script.sh
+```
+
+ShellCheck detecta problemas típicos de quoting, variables no usadas, word splitting, arrays y patrones ambiguos. No reemplaza tests, pero evita muchos fallos baratos.
+
+## Testing de scripts
+
+Un script se puede testear si está estructurado en funciones.
+
+Ejemplo `math.sh`:
+
+```bash
+#!/usr/bin/env bash
+
+sum() {
+  local a="${1:?a required}"
+  local b="${2:?b required}"
+  printf '%s\n' "$((a + b))"
+}
+
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  sum "$@"
+fi
+```
+
+Test simple:
+
+```bash
+result="$(./math.sh 2 3)"
+[[ "$result" == "5" ]] || {
+  printf 'expected 5, got %s\n' "$result" >&2
+  exit 1
+}
+```
+
+Patrón útil:
+
+```bash
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  main "$@"
+fi
+```
+
+Permite importar funciones desde otro script sin ejecutar `main`.
+
+## Seguridad práctica
+
+Bash puede ser peligroso porque ejecuta comandos. Trata toda entrada externa como no confiable.
+
+Buenas prácticas:
+
+- Cita variables con comillas dobles.
+- Usa `--` antes de argumentos que podrían empezar por `-`.
+- Evita `eval`.
+- No construyas comandos como strings si puedes usar arrays.
+- No imprimas secretos.
+- No guardes tokens en scripts versionados.
+- Usa `mktemp` para archivos temporales.
+- Valida argumentos y rutas.
+- Falla rápido si faltan variables obligatorias.
+- Ejecuta con privilegios mínimos.
+
+Evita `eval`:
+
+```bash
+# Peligroso
+eval "git checkout $branch"
+```
+
+Usa argumentos:
+
+```bash
+git checkout -- "$branch"
+```
+
+Para comandos dinámicos, usa arrays:
+
+```bash
+cmd=(docker compose -f compose.yml)
+
+if [[ "${ci:-false}" == "true" ]]; then
+  cmd+=(-f compose.ci.yml)
+fi
+
+cmd+=(up --build)
+
+"${cmd[@]}"
+```
+
+Validar input:
+
+```bash
+environment="${1:?environment required}"
+
+case "$environment" in
+  staging|production)
+    ;;
+  *)
+    die "invalid environment: $environment"
+    ;;
+esac
+```
+
+## Portabilidad: Bash vs `sh`
+
+No todo shell script es Bash. Si usas:
+
+- arrays,
+- `[[ ... ]]`,
+- `(( ... ))`,
+- process substitution,
+- `mapfile`,
+- `${var,,}`,
+- associative arrays,
+
+entonces estás escribiendo Bash, no POSIX `sh`.
+
+Decláralo:
+
+```bash
+#!/usr/bin/env bash
+```
+
+Si necesitas POSIX `sh`, evita features específicas de Bash y prueba con:
+
+```bash
+sh script.sh
+```
+
+Regla profesional: elige portabilidad o ergonomía, pero no lo dejes implícito.
+
+## Integración con CI/CD
+
+Ejemplo de script para CI:
+
+```bash
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+main() {
+  npm ci
+  npm run lint
+  npm test
+  npm run build
+}
+
+main "$@"
+```
+
+Workflow de GitHub Actions:
+
+```yaml
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: ./scripts/ci.sh
+```
+
+Ventaja: la lógica vive en el repositorio y puede ejecutarse localmente:
+
+```bash
+./scripts/ci.sh
+```
+
+No entierres lógica crítica en YAML si puede vivir como script versionado, testeable y ejecutable fuera del proveedor de CI.
+
+## Script completo: backup práctico
+
+Ejemplo de backup local comprimido:
+
+```bash
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+readonly SCRIPT_NAME="$(basename "$0")"
+
+source_dir=""
+target_dir=""
+retention_days=7
+
+usage() {
+  cat <<'EOF'
+usage: backup.sh -s source_dir -t target_dir [-r retention_days]
+
+options:
+  -s  source directory
+  -t  target directory
+  -r  retention days, default 7
+  -h  show help
+EOF
+}
+
+log() {
+  printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" >&2
+}
+
+die() {
+  printf 'error: %s\n' "$*" >&2
+  exit 1
+}
+
+parse_args() {
+  while getopts ":s:t:r:h" opt; do
+    case "$opt" in
+      s) source_dir="$OPTARG" ;;
+      t) target_dir="$OPTARG" ;;
+      r) retention_days="$OPTARG" ;;
+      h)
+        usage
+        exit 0
+        ;;
+      :)
+        die "option -$OPTARG requires an argument"
+        ;;
+      \?)
+        die "invalid option -$OPTARG"
+        ;;
+    esac
+  done
+}
+
+validate() {
+  [[ -n "$source_dir" ]] || die "source directory is required"
+  [[ -n "$target_dir" ]] || die "target directory is required"
+  [[ -d "$source_dir" ]] || die "source directory not found: $source_dir"
+  [[ "$retention_days" =~ ^[0-9]+$ ]] || die "retention days must be numeric"
+
+  mkdir -p -- "$target_dir"
+}
+
+create_backup() {
+  local timestamp
+  local archive
+
+  timestamp="$(date '+%Y%m%d-%H%M%S')"
+  archive="${target_dir}/backup-${timestamp}.tar.gz"
+
+  log "creating backup: $archive"
+  tar -czf "$archive" -C "$source_dir" .
+  log "backup created"
+}
+
+cleanup_old_backups() {
+  log "removing backups older than ${retention_days} days"
+  find "$target_dir" \
+    -name 'backup-*.tar.gz' \
+    -type f \
+    -mtime "+${retention_days}" \
+    -print \
+    -delete
+}
+
+main() {
+  parse_args "$@"
+  validate
+  create_backup
+  cleanup_old_backups
+}
+
+main "$@"
+```
+
+Uso:
+
+```bash
+./backup.sh -s ./data -t ./backups -r 14
+```
+
+Este script tiene:
+
+- argumentos con `getopts`,
+- validación,
+- logs por stderr,
+- quoting,
+- `find` seguro,
+- salida clara,
+- estructura testeable.
+
+## Errores comunes
+
+- No citar variables.
+- Usar `echo` para datos complejos en vez de `printf`.
+- Parsear JSON con `grep` y `sed` en lugar de `jq`.
+- Parsear CSV real a mano.
+- Usar `eval`.
+- Ignorar exit status.
+- Confiar ciegamente en `set -e`.
+- Usar rutas temporales predecibles.
+- Iterar `for file in $(ls)`.
+- Usar `cat file | while read line` sin necesidad.
+- Mezclar logs y datos en stdout.
+- No validar argumentos.
+- No usar `--` antes de rutas controladas por usuario.
+- Escribir scripts Bash con shebang `#!/bin/sh`.
+
+## Checklist antes de usar un script en serio
+
+- Tiene shebang correcto.
+- Usa `set -Eeuo pipefail` o maneja errores explícitamente.
+- Las variables están citadas.
+- Los argumentos se validan.
+- Los mensajes de error van a stderr.
+- Los datos consumibles van a stdout.
+- Usa `mktemp` para temporales.
+- Limpia recursos con `trap`.
+- No usa `eval`.
+- No imprime secretos.
+- Soporta rutas con espacios.
+- Pasa `bash -n`.
+- Pasa ShellCheck si está disponible.
+- Tiene ejemplos de uso.
+- Se puede ejecutar localmente y en CI.
+
+## Chuleta de Bash
+
+| Objetivo | Sintaxis |
+| --- | --- |
+| Shebang | `#!/usr/bin/env bash` |
+| Strict mode práctico | `set -Eeuo pipefail` |
+| Log a stderr | `printf 'msg\n' >&2` |
+| Variable obligatoria | `${VAR:?VAR is required}` |
+| Valor por defecto | `${VAR:-default}` |
+| Todos los argumentos | `"$@"` |
+| Número de argumentos | `$#` |
+| Último exit status | `$?` |
+| Último PID en background | `$!` |
+| Condicional Bash | `[[ "$x" == "value" ]]` |
+| Regex | `[[ "$x" =~ pattern ]]` |
+| Función | `name() { ...; }` |
+| Array | `items=("a" "b")` |
+| Iterar array | `for item in "${items[@]}"; do ...; done` |
+| Command substitution | `value="$(command)"` |
+| Aritmética | `$((count + 1))` |
+| Here-doc sin expansión | `cat <<'EOF'` |
+| Trap de salida | `trap cleanup EXIT` |
+| Validar sintaxis | `bash -n script.sh` |
+| Debug | `bash -x script.sh` |
+
+## Glosario
+
+**Bash**: shell y lenguaje de comandos compatible en gran parte con `sh`, con extensiones propias.
+
+**Builtin**: comando implementado dentro de la shell.
+
+**Command substitution**: expansión que reemplaza `$(...)` por la salida de un comando.
+
+**Exit status**: código numérico que indica el resultado de un comando.
+
+**Expansion**: proceso por el que Bash transforma variables, patrones, comandos y expresiones antes de ejecutar.
+
+**File descriptor**: identificador numérico de entrada o salida, como stdin `0`, stdout `1` y stderr `2`.
+
+**Globbing**: expansión de patrones de nombres de archivo como `*.log`.
+
+**Here-doc**: bloque de texto usado como stdin de un comando.
+
+**IFS**: Internal Field Separator. Controla cómo Bash separa campos en algunas expansiones y lecturas.
+
+**Pipeline**: conexión de stdout de un comando con stdin de otro mediante `|`.
+
+**Quoting**: uso de comillas o escapes para controlar interpretación de caracteres especiales.
+
+**Redirection**: cambio del origen o destino de stdin, stdout o stderr.
+
+**Shebang**: primera línea que indica qué intérprete debe ejecutar el script.
+
+**ShellCheck**: herramienta de análisis estático para scripts shell.
+
+**Signal**: notificación enviada a un proceso, como `INT` o `TERM`.
+
+**Subshell**: shell hija creada para ejecutar ciertas construcciones.
+
+**Trap**: handler que Bash ejecuta ante una señal o evento como `EXIT`.
+
+**Word splitting**: separación de texto expandido en argumentos según `IFS`.
+
+## Referencias oficiales
+
+- [Bash Reference Manual](https://www.gnu.org/software/bash/manual/bash.html)
+- [Shell Parameter Expansion](https://www.gnu.org/software/bash/manual/html_node/Shell-Parameter-Expansion.html)
+- [Bash Conditional Expressions](https://www.gnu.org/software/bash/manual/html_node/Bash-Conditional-Expressions.html)
+- [Arrays](https://www.gnu.org/software/bash/manual/html_node/Arrays.html)
+- [The Set Builtin](https://www.gnu.org/software/bash/manual/html_node/The-Set-Builtin.html)
+- [Redirections](https://www.gnu.org/software/bash/manual/html_node/Redirections.html)
+
+## Cierre
+
+Bash bien usado no es una colección de trucos: es una herramienta de automatización con reglas estrictas. La diferencia entre un script frágil y uno profesional suele estar en detalles concretos: quoting, validación, exit status, logs por stderr, limpieza con traps, temporales seguros y pruebas básicas. Si el script es claro, falla con mensajes útiles y puede ejecutarse igual en local y en CI, ya está haciendo su trabajo.

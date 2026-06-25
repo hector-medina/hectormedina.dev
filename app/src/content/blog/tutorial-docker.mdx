@@ -1,0 +1,1115 @@
+---
+title: "Docker para profesionales: tutorial práctico de principio a fin"
+description: "Una guía práctica para dominar Docker: imágenes, contenedores, Dockerfile, Compose, volúmenes, redes, registros, multi-stage builds, seguridad, debugging y CI/CD."
+pubDate: "2026-01-04"
+category: "DevOps"
+tags: ["docker", "containers", "devops", "ci-cd", "compose"]
+---
+
+Docker permite empaquetar una aplicación con sus dependencias y ejecutarla de forma consistente en desarrollo, CI/CD y producción. La promesa no es "funciona en mi máquina", sino "funciona igual en cualquier entorno que pueda ejecutar contenedores".
+
+Este tutorial tiene un enfoque eminentemente práctico. Vas a crear imágenes, ejecutar contenedores, escribir `Dockerfile`, levantar servicios con Docker Compose, trabajar con volúmenes y redes, publicar imágenes, depurar problemas y aplicar criterios profesionales de seguridad y operación.
+
+## Modelo mental de Docker
+
+Antes de memorizar comandos, conviene separar conceptos:
+
+- **Image**: plantilla inmutable construida a partir de capas. Contiene filesystem, metadatos y configuración de ejecución.
+- **Container**: instancia en ejecución de una imagen. Tiene proceso principal, filesystem escribible, red y recursos asignados.
+- **Dockerfile**: receta declarativa para construir una imagen.
+- **Layer**: capa generada por instrucciones del `Dockerfile`. Docker reutiliza capas mediante cache.
+- **Registry**: servidor donde se publican y descargan imágenes, como Docker Hub, GitHub Container Registry o ECR.
+- **Tag**: etiqueta de una imagen, por ejemplo `myapp:1.0.0` o `postgres:16`.
+- **Volume**: almacenamiento persistente gestionado por Docker.
+- **Bind mount**: montaje de una ruta del host dentro del contenedor.
+- **Network**: red virtual que conecta contenedores entre sí y con el exterior.
+- **Compose**: herramienta para definir y ejecutar aplicaciones multi-contenedor con YAML.
+
+El flujo básico es:
+
+```text
+Dockerfile
+docker build
+image
+docker run
+container
+logs / exec / inspect
+docker push
+```
+
+## Verificar instalación
+
+Comprueba que Docker responde:
+
+```bash
+docker version
+docker info
+```
+
+Ejecuta el contenedor de prueba:
+
+```bash
+docker run --rm hello-world
+```
+
+Lista imágenes locales:
+
+```bash
+docker images
+```
+
+Lista contenedores en ejecución:
+
+```bash
+docker ps
+```
+
+Lista todos los contenedores:
+
+```bash
+docker ps -a
+```
+
+## Ejecutar tu primer contenedor útil
+
+Levanta Nginx en segundo plano:
+
+```bash
+docker run --name web \
+  --detach \
+  --publish 8080:80 \
+  nginx:1.27-alpine
+```
+
+Abre:
+
+```text
+http://localhost:8080
+```
+
+Qué significa cada opción:
+
+- `--name web`: asigna un nombre estable al contenedor.
+- `--detach`: ejecuta en background.
+- `--publish 8080:80`: publica el puerto `80` del contenedor en el puerto `8080` del host.
+- `nginx:1.27-alpine`: imagen y tag que se usarán.
+
+Ver logs:
+
+```bash
+docker logs web
+docker logs -f web
+```
+
+Entrar al contenedor:
+
+```bash
+docker exec -it web sh
+```
+
+Detenerlo:
+
+```bash
+docker stop web
+```
+
+Eliminarlo:
+
+```bash
+docker rm web
+```
+
+Si quieres borrar automáticamente el contenedor al terminar:
+
+```bash
+docker run --rm nginx:1.27-alpine
+```
+
+## Imágenes y contenedores
+
+Una imagen no "corre"; quien corre es el contenedor. Puedes tener una imagen `nginx:1.27-alpine` y crear muchos contenedores a partir de ella.
+
+Descargar una imagen:
+
+```bash
+docker pull redis:7-alpine
+```
+
+Inspeccionar una imagen:
+
+```bash
+docker image inspect redis:7-alpine
+```
+
+Ver capas de una imagen:
+
+```bash
+docker history redis:7-alpine
+```
+
+Crear un contenedor sin arrancarlo:
+
+```bash
+docker create --name cache redis:7-alpine
+```
+
+Arrancarlo:
+
+```bash
+docker start cache
+```
+
+Detenerlo:
+
+```bash
+docker stop cache
+```
+
+Eliminarlo:
+
+```bash
+docker rm cache
+```
+
+Eliminar una imagen local:
+
+```bash
+docker rmi redis:7-alpine
+```
+
+Regla profesional: no trates los contenedores como servidores permanentes. Si necesitas cambiar algo, cambia el `Dockerfile`, reconstruye la imagen y redepliega.
+
+## Crear un Dockerfile
+
+Supongamos una aplicación Node.js con estos scripts:
+
+```json
+{
+  "scripts": {
+    "build": "vite build",
+    "start": "node server.js",
+    "test": "vitest run"
+  }
+}
+```
+
+Un `Dockerfile` inicial:
+
+```dockerfile
+# syntax=docker/dockerfile:1
+FROM node:22-alpine
+
+WORKDIR /app
+
+COPY package*.json ./
+RUN npm ci
+
+COPY . .
+RUN npm run build
+
+ENV NODE_ENV=production
+
+EXPOSE 3000
+
+CMD ["npm", "start"]
+```
+
+Construye la imagen:
+
+```bash
+docker build -t myapp:dev .
+```
+
+Ejecuta:
+
+```bash
+docker run --rm \
+  --name myapp \
+  --publish 3000:3000 \
+  myapp:dev
+```
+
+Instrucciones importantes:
+
+- `FROM`: define la imagen base.
+- `WORKDIR`: establece el directorio de trabajo.
+- `COPY`: copia archivos desde el contexto de build.
+- `RUN`: ejecuta comandos durante la construcción de la imagen.
+- `ENV`: define variables de entorno.
+- `EXPOSE`: documenta el puerto usado por la aplicación.
+- `CMD`: comando por defecto al arrancar el contenedor.
+
+## `.dockerignore`
+
+El contexto de build es lo que Docker envía al builder. Si copias todo sin filtrar, puedes enviar archivos pesados o sensibles.
+
+Crea `.dockerignore`:
+
+```gitignore
+node_modules
+dist
+.git
+.github
+.env
+*.log
+coverage
+.DS_Store
+```
+
+Esto mejora rendimiento, reduce riesgo de filtrar secretos y evita invalidar cache por archivos que no importan al build.
+
+## Cache de build
+
+Docker reutiliza capas cuando las instrucciones y sus entradas no cambian. Por eso conviene copiar primero archivos de dependencias y después el resto del código.
+
+Buen patrón:
+
+```dockerfile
+COPY package*.json ./
+RUN npm ci
+
+COPY . .
+RUN npm run build
+```
+
+Mal patrón:
+
+```dockerfile
+COPY . .
+RUN npm ci
+RUN npm run build
+```
+
+En el mal patrón, cualquier cambio en cualquier archivo invalida la capa de instalación de dependencias. En proyectos grandes, eso vuelve lento cada build.
+
+Construir sin cache cuando necesitas descartar capas anteriores:
+
+```bash
+docker build --no-cache -t myapp:dev .
+```
+
+Ver detalle del build:
+
+```bash
+docker build --progress=plain -t myapp:dev .
+```
+
+## Multi-stage builds
+
+Un multi-stage build usa varios `FROM` en el mismo `Dockerfile`. La idea es compilar en una etapa con herramientas pesadas y copiar solo el resultado a una imagen final más pequeña.
+
+Ejemplo para Node.js:
+
+```dockerfile
+# syntax=docker/dockerfile:1
+FROM node:22-alpine AS deps
+WORKDIR /app
+COPY package*.json ./
+RUN npm ci
+
+FROM node:22-alpine AS build
+WORKDIR /app
+COPY --from=deps /app/node_modules ./node_modules
+COPY . .
+RUN npm run build
+
+FROM node:22-alpine AS runtime
+WORKDIR /app
+
+ENV NODE_ENV=production
+
+COPY package*.json ./
+RUN npm ci --omit=dev
+
+COPY --from=build /app/dist ./dist
+COPY --from=build /app/server.js ./server.js
+
+USER node
+
+EXPOSE 3000
+
+CMD ["node", "server.js"]
+```
+
+Ventajas:
+
+- La imagen final no incluye dependencias de desarrollo.
+- La superficie de ataque baja.
+- El tamaño baja.
+- El build sigue siendo reproducible.
+
+Construir una etapa concreta para depurar:
+
+```bash
+docker build --target build -t myapp:build .
+```
+
+## ENTRYPOINT y CMD
+
+`CMD` define el comando por defecto. `ENTRYPOINT` define el ejecutable principal.
+
+Ejemplo con `CMD`:
+
+```dockerfile
+CMD ["node", "server.js"]
+```
+
+Ejemplo con `ENTRYPOINT` y argumentos:
+
+```dockerfile
+ENTRYPOINT ["node", "cli.js"]
+CMD ["--help"]
+```
+
+Al ejecutar:
+
+```bash
+docker run --rm mycli:dev version
+```
+
+Docker ejecutará:
+
+```text
+node cli.js version
+```
+
+Regla práctica:
+
+- Usa `CMD` para aplicaciones web y procesos normales.
+- Usa `ENTRYPOINT` para imágenes que se comportan como ejecutables.
+- Prefiere formato exec array: `["node", "server.js"]`.
+
+Evita esta forma salvo que necesites shell:
+
+```dockerfile
+CMD node server.js
+```
+
+El formato shell maneja señales peor y puede complicar apagados limpios.
+
+## Variables de entorno
+
+Define valores por defecto en la imagen:
+
+```dockerfile
+ENV NODE_ENV=production
+ENV PORT=3000
+```
+
+Sobrescribe al ejecutar:
+
+```bash
+docker run --rm \
+  --env PORT=4000 \
+  --publish 4000:4000 \
+  myapp:dev
+```
+
+Usa un archivo `.env` local:
+
+```bash
+docker run --rm --env-file .env myapp:dev
+```
+
+No metas secretos en la imagen:
+
+```dockerfile
+# No hagas esto
+ENV AWS_SECRET_ACCESS_KEY=...
+```
+
+Un secreto en una capa de imagen puede quedar expuesto en historial, registry o caches.
+
+## Volúmenes y bind mounts
+
+Los contenedores son efímeros. Si eliminas un contenedor, su capa escribible desaparece. Para persistencia, usa volúmenes.
+
+Crear un volumen:
+
+```bash
+docker volume create postgres-data
+```
+
+Usarlo con PostgreSQL:
+
+```bash
+docker run --name db \
+  --detach \
+  --env POSTGRES_PASSWORD=postgres \
+  --volume postgres-data:/var/lib/postgresql/data \
+  --publish 5432:5432 \
+  postgres:16-alpine
+```
+
+Listar volúmenes:
+
+```bash
+docker volume ls
+```
+
+Inspeccionar:
+
+```bash
+docker volume inspect postgres-data
+```
+
+Eliminar:
+
+```bash
+docker volume rm postgres-data
+```
+
+Bind mount para desarrollo:
+
+```bash
+docker run --rm \
+  --volume "$PWD":/app \
+  --workdir /app \
+  node:22-alpine \
+  npm test
+```
+
+Cuándo usar cada uno:
+
+- **Volume**: datos persistentes gestionados por Docker.
+- **Bind mount**: desarrollo local, archivos del host, herramientas temporales.
+- **tmpfs**: datos temporales en memoria.
+
+## Redes y puertos
+
+Publicar un puerto:
+
+```bash
+docker run --rm -p 8080:80 nginx:1.27-alpine
+```
+
+Formato:
+
+```text
+host:container
+```
+
+Crear una red user-defined:
+
+```bash
+docker network create app-net
+```
+
+Ejecutar Redis en esa red:
+
+```bash
+docker run --name redis \
+  --detach \
+  --network app-net \
+  redis:7-alpine
+```
+
+Ejecutar una app en la misma red:
+
+```bash
+docker run --name app \
+  --rm \
+  --network app-net \
+  --env REDIS_URL=redis://redis:6379 \
+  myapp:dev
+```
+
+En una red definida por el usuario, los contenedores pueden resolverse por nombre. En el ejemplo, `redis` funciona como hostname.
+
+Inspeccionar red:
+
+```bash
+docker network inspect app-net
+```
+
+Eliminar red:
+
+```bash
+docker network rm app-net
+```
+
+Regla profesional: no publiques puertos que no necesita consumir nadie desde fuera del host. La comunicación interna entre contenedores debe ir por redes privadas.
+
+## Docker Compose
+
+Docker Compose define una aplicación multi-contenedor con YAML.
+
+Crea `compose.yml`:
+
+```yaml
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "3000:3000"
+    environment:
+      NODE_ENV: development
+      DATABASE_URL: postgres://app:app@db:5432/app
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      - .:/app
+      - node_modules:/app/node_modules
+
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: app
+      POSTGRES_PASSWORD: app
+      POSTGRES_DB: app
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U app -d app"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  node_modules:
+  postgres_data:
+```
+
+Levantar:
+
+```bash
+docker compose up
+```
+
+Levantar en segundo plano:
+
+```bash
+docker compose up -d
+```
+
+Reconstruir:
+
+```bash
+docker compose up --build
+```
+
+Ver servicios:
+
+```bash
+docker compose ps
+```
+
+Ver logs:
+
+```bash
+docker compose logs -f
+docker compose logs -f app
+```
+
+Ejecutar comando dentro de un servicio:
+
+```bash
+docker compose exec app sh
+docker compose exec app npm test
+```
+
+Apagar:
+
+```bash
+docker compose down
+```
+
+Apagar y borrar volúmenes:
+
+```bash
+docker compose down -v
+```
+
+No añadas `version:` salvo que tengas una razón de compatibilidad heredada. Compose moderno se rige por la Compose Specification.
+
+## `depends_on` y healthchecks
+
+`depends_on` ordena arranque, pero una base de datos puede estar "arrancada" y todavía no aceptar conexiones. Por eso se usa `healthcheck`.
+
+Ejemplo:
+
+```yaml
+services:
+  api:
+    build: .
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_PASSWORD: postgres
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+```
+
+En `Dockerfile`, puedes definir un healthcheck para la propia aplicación:
+
+```dockerfile
+HEALTHCHECK --interval=30s --timeout=3s --retries=3 \
+  CMD wget -qO- http://localhost:3000/health || exit 1
+```
+
+Un healthcheck no reemplaza métricas ni alertas, pero ayuda a detectar procesos vivos que ya no responden correctamente.
+
+## Tags, registry y publicación
+
+Construye con tag:
+
+```bash
+docker build -t ghcr.io/usuario/myapp:1.0.0 .
+```
+
+Añade otro tag a la misma imagen:
+
+```bash
+docker tag ghcr.io/usuario/myapp:1.0.0 ghcr.io/usuario/myapp:latest
+```
+
+Inicia sesión:
+
+```bash
+docker login ghcr.io
+```
+
+Publica:
+
+```bash
+docker push ghcr.io/usuario/myapp:1.0.0
+docker push ghcr.io/usuario/myapp:latest
+```
+
+Buenas prácticas de tagging:
+
+- Usa tags inmutables para releases: `1.0.0`, `1.0.1`, `2026.06.23`.
+- Puedes publicar `latest`, pero no lo uses como única referencia de producción.
+- Para Kubernetes o despliegues auditables, usa tags versionados o digest.
+- No publiques imágenes con secretos embebidos.
+
+Ejecutar por digest:
+
+```bash
+docker pull ghcr.io/usuario/myapp@sha256:...
+```
+
+El digest identifica exactamente el contenido de la imagen.
+
+## Buildx y multi-arquitectura
+
+Buildx permite construir con BuildKit y crear imágenes para varias arquitecturas.
+
+Ver builders:
+
+```bash
+docker buildx ls
+```
+
+Crear builder:
+
+```bash
+docker buildx create --name multiarch --use
+```
+
+Construir y publicar para `amd64` y `arm64`:
+
+```bash
+docker buildx build \
+  --platform linux/amd64,linux/arm64 \
+  --tag ghcr.io/usuario/myapp:1.0.0 \
+  --push \
+  .
+```
+
+Esto es útil si tu equipo desarrolla en Apple Silicon pero producción corre en Linux `amd64`, o si distribuyes imágenes para varios entornos.
+
+## Docker en CI/CD
+
+Un pipeline típico:
+
+```text
+checkout
+tests
+docker build
+scan
+docker push
+deploy
+```
+
+Ejemplo con GitHub Actions:
+
+```yaml
+name: Docker
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - "v*.*.*"
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        if: github.event_name == 'push'
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: ${{ github.event_name == 'push' }}
+          tags: ghcr.io/usuario/myapp:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+```
+
+Puntos importantes:
+
+- En pull requests, construye pero no publiques.
+- En `main` o tags, publica.
+- Usa cache remoto para acelerar builds.
+- No uses credenciales estáticas si puedes usar tokens de CI o OIDC.
+- Añade scanning de vulnerabilidades como parte del pipeline.
+
+## Seguridad práctica
+
+Docker no es una frontera mágica de seguridad. Un contenedor comparte kernel con el host, por lo que debes reducir privilegios.
+
+Buenas prácticas:
+
+- Usa imágenes base oficiales y mantenidas.
+- Fija tags de imágenes base.
+- Reduce la imagen final con multi-stage builds.
+- Ejecuta como usuario no root cuando sea posible.
+- No montes el socket Docker dentro de contenedores salvo necesidad muy justificada.
+- No uses `--privileged` en desarrollo normal ni en producción.
+- No guardes secretos en el `Dockerfile`.
+- Escanea imágenes.
+- Mantén dependencias actualizadas.
+- Limita capacidades Linux si tu runtime lo permite.
+
+Ejecutar como usuario no root en `Dockerfile`:
+
+```dockerfile
+FROM node:22-alpine
+WORKDIR /app
+COPY package*.json ./
+RUN npm ci --omit=dev
+COPY . .
+USER node
+CMD ["node", "server.js"]
+```
+
+Ejecutar con filesystem de solo lectura:
+
+```bash
+docker run --rm \
+  --read-only \
+  --tmpfs /tmp \
+  myapp:prod
+```
+
+Limitar memoria y CPU:
+
+```bash
+docker run --rm \
+  --memory 512m \
+  --cpus 1 \
+  myapp:prod
+```
+
+Escanear con Docker Scout si está disponible:
+
+```bash
+docker scout quickview myapp:prod
+docker scout cves myapp:prod
+```
+
+## Debugging de contenedores
+
+Ver procesos:
+
+```bash
+docker top myapp
+```
+
+Ver consumo:
+
+```bash
+docker stats
+```
+
+Inspeccionar metadatos:
+
+```bash
+docker inspect myapp
+```
+
+Ver logs:
+
+```bash
+docker logs --tail 100 myapp
+docker logs -f myapp
+```
+
+Entrar a un contenedor:
+
+```bash
+docker exec -it myapp sh
+```
+
+Copiar archivos desde un contenedor:
+
+```bash
+docker cp myapp:/app/logs ./logs
+```
+
+Ver puertos:
+
+```bash
+docker port myapp
+```
+
+Ver cambios en el filesystem del contenedor:
+
+```bash
+docker diff myapp
+```
+
+Si el contenedor se cierra inmediatamente, revisa el exit code:
+
+```bash
+docker ps -a
+docker logs myapp
+docker inspect myapp --format '{{.State.ExitCode}}'
+```
+
+Patrón de diagnóstico:
+
+```text
+docker ps -a
+docker logs
+docker inspect
+docker exec
+docker stats
+docker events
+```
+
+## Limpieza segura
+
+Docker acumula imágenes, contenedores parados, redes y cache.
+
+Borrar contenedores parados:
+
+```bash
+docker container prune
+```
+
+Borrar imágenes no usadas:
+
+```bash
+docker image prune
+```
+
+Borrar redes no usadas:
+
+```bash
+docker network prune
+```
+
+Borrar volúmenes no usados:
+
+```bash
+docker volume prune
+```
+
+Borrar todo lo no usado:
+
+```bash
+docker system prune
+```
+
+Incluir volúmenes:
+
+```bash
+docker system prune --volumes
+```
+
+Ten cuidado con `--volumes`: puede eliminar datos persistentes de bases de datos locales.
+
+Ver uso de disco:
+
+```bash
+docker system df
+```
+
+## Flujo profesional recomendado
+
+Para una aplicación de backend:
+
+```bash
+docker build -t myapp:dev .
+docker run --rm -p 3000:3000 myapp:dev
+docker compose up --build
+docker compose exec app npm test
+docker build -t ghcr.io/usuario/myapp:1.0.0 .
+docker push ghcr.io/usuario/myapp:1.0.0
+```
+
+Para desarrollo local:
+
+```bash
+docker compose up --build
+docker compose logs -f app
+docker compose exec app sh
+docker compose down
+```
+
+Para release:
+
+```bash
+docker buildx build \
+  --platform linux/amd64,linux/arm64 \
+  --tag ghcr.io/usuario/myapp:1.0.0 \
+  --push \
+  .
+```
+
+Antes de publicar:
+
+```bash
+docker run --rm myapp:prod npm test
+docker run --rm -p 3000:3000 myapp:prod
+docker scout quickview myapp:prod
+```
+
+## Errores comunes
+
+- Copiar todo el repositorio antes de instalar dependencias e invalidar cache en cada build.
+- No usar `.dockerignore`.
+- Ejecutar como root sin necesidad.
+- Publicar `latest` sin tag versionado.
+- Meter `.env`, tokens o claves dentro de la imagen.
+- Usar `--privileged` para evitar entender un problema de permisos.
+- Confundir `ports` con `expose`.
+- Borrar volúmenes pensando que solo borras contenedores.
+- Depender de cambios manuales hechos con `docker exec`.
+- Usar Compose como sustituto de un orquestador de producción sin entender sus límites.
+- No definir healthchecks en servicios críticos.
+- Hacer un build distinto del artifact que se despliega.
+
+## Checklist antes de llevar Docker a producción
+
+- La imagen se construye desde un `Dockerfile` versionado.
+- Existe `.dockerignore`.
+- Las dependencias se instalan de forma reproducible.
+- La imagen final usa multi-stage si hay fase de build.
+- El contenedor corre como usuario no root si es posible.
+- No hay secretos en capas, variables quemadas o historial.
+- Los tags de release son inmutables o auditables.
+- La imagen se escanea.
+- Los puertos publicados son los mínimos.
+- Hay healthcheck o endpoint de salud.
+- Los logs van a stdout/stderr.
+- Los datos persistentes están fuera del contenedor.
+- El despliegue usa la misma imagen construida en CI.
+
+## Chuleta de comandos
+
+| Objetivo | Comando |
+| --- | --- |
+| Ver versión | `docker version` |
+| Ver estado del engine | `docker info` |
+| Listar contenedores activos | `docker ps` |
+| Listar todos los contenedores | `docker ps -a` |
+| Listar imágenes | `docker images` |
+| Descargar imagen | `docker pull nginx:1.27-alpine` |
+| Construir imagen | `docker build -t myapp:dev .` |
+| Ejecutar contenedor | `docker run --rm myapp:dev` |
+| Publicar puerto | `docker run -p 8080:80 nginx` |
+| Ver logs | `docker logs -f nombre` |
+| Entrar al contenedor | `docker exec -it nombre sh` |
+| Detener contenedor | `docker stop nombre` |
+| Eliminar contenedor | `docker rm nombre` |
+| Eliminar imagen | `docker rmi imagen:tag` |
+| Crear red | `docker network create app-net` |
+| Crear volumen | `docker volume create data` |
+| Levantar Compose | `docker compose up --build` |
+| Apagar Compose | `docker compose down` |
+| Publicar imagen | `docker push registry/app:tag` |
+| Ver uso de disco | `docker system df` |
+| Limpiar recursos | `docker system prune` |
+
+## Glosario
+
+**Bind mount**: montaje de una ruta del host dentro de un contenedor.
+
+**Build context**: conjunto de archivos enviados al builder durante `docker build`.
+
+**BuildKit**: backend moderno de construcción de imágenes Docker, con mejor cache, paralelización y funcionalidades avanzadas.
+
+**Container**: instancia ejecutable de una imagen.
+
+**Dockerfile**: archivo declarativo que define cómo construir una imagen.
+
+**Entrypoint**: ejecutable principal de una imagen.
+
+**Healthcheck**: prueba periódica para determinar si un contenedor está saludable.
+
+**Image**: plantilla inmutable compuesta por capas y metadatos.
+
+**Layer**: capa del filesystem generada por una instrucción del build.
+
+**Multi-stage build**: técnica que usa varias etapas de build para producir una imagen final más pequeña y limpia.
+
+**Port publishing**: exposición de un puerto del contenedor en el host mediante `-p` o `--publish`.
+
+**Registry**: servidor donde se almacenan y distribuyen imágenes.
+
+**Tag**: etiqueta legible asociada a una imagen.
+
+**Volume**: almacenamiento persistente gestionado por Docker.
+
+**Compose**: herramienta para definir aplicaciones multi-contenedor mediante YAML.
+
+**Runner**: máquina donde CI/CD ejecuta comandos Docker.
+
+**Digest**: identificador inmutable del contenido de una imagen.
+
+**Namespace**: aislamiento del kernel usado por contenedores para procesos, red, mounts y otros recursos.
+
+**cgroups**: mecanismo del kernel para limitar y contabilizar recursos como CPU y memoria.
+
+## Referencias oficiales
+
+- [Dockerfile reference](https://docs.docker.com/reference/dockerfile/)
+- [Compose file reference](https://docs.docker.com/reference/compose-file/)
+- [Multi-stage builds](https://docs.docker.com/build/building/multi-stage/)
+- [Docker build cache](https://docs.docker.com/build/cache/)
+- [Docker networking overview](https://docs.docker.com/engine/network/)
+
+## Cierre
+
+Docker bien usado no consiste solo en envolver una aplicación en una imagen. Consiste en construir artifacts reproducibles, pequeños, seguros y observables; separar configuración de código; persistir datos donde corresponde; modelar redes con intención; y automatizar publicación y despliegue. Si tu `Dockerfile`, tu `compose.yml` y tu pipeline son simples de leer, reproducibles y seguros por defecto, vas por el camino correcto.
