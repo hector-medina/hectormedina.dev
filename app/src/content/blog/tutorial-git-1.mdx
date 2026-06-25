@@ -1,0 +1,756 @@
+---
+title: "Git I: fundamentos y flujo diario para trabajar con criterio"
+description: "Primera parte de una guía profesional de Git: modelo mental, configuración, repositorios, staging area, commits, remotos y flujo diario."
+pubDate: "2025-09-06"
+category: "DevOps"
+tags: ["git", "version-control", "devops", "workflow"]
+---
+
+Git no es una carpeta con historial ni una forma elegante de subir código a GitHub. Git es un sistema distribuido de control de versiones: guarda la evolución de un proyecto, permite trabajar en paralelo, comparar estados, recuperar cambios y colaborar sin depender de una única copia central.
+
+Esta primera parte está pensada para alguien que empieza desde cero, pero no quiere quedarse en lo superficial. El objetivo no es memorizar comandos: es entender qué está pasando cuando los ejecutas.
+
+Al terminar deberías poder crear un repositorio, hacer commits limpios, revisar tus cambios, subirlos a un remoto y leer el historial con suficiente criterio para no trabajar a ciegas.
+
+## Qué problema resuelve Git
+
+Sin Git, un proyecto suele acabar así:
+
+```text
+app-final.zip
+app-final-bueno.zip
+app-final-bueno-ahora-si.zip
+app-produccion.zip
+app-produccion-copy.zip
+```
+
+Eso no escala. No sabes qué cambió, quién lo cambió, por qué lo cambió ni cómo volver a un estado anterior.
+
+Git resuelve tres problemas:
+
+- **Historial**: cada cambio importante queda registrado.
+- **Colaboración**: varias personas pueden trabajar en paralelo.
+- **Recuperación**: puedes comparar, revertir y reconstruir estados anteriores.
+
+Git no evita que cometas errores. Lo que hace es darte herramientas para detectarlos, entenderlos y corregirlos.
+
+## Git no es GitHub
+
+Esta distinción importa:
+
+- **Git**: herramienta local de control de versiones.
+- **GitHub, GitLab, Bitbucket**: plataformas que alojan repositorios Git y añaden pull requests, issues, permisos, CI/CD, releases y revisión de código.
+
+Puedes usar Git sin GitHub:
+
+```bash
+git init
+git add .
+git commit -m "initial commit"
+```
+
+Y puedes tener un repositorio Git alojado en muchas plataformas. Git es el motor; GitHub es una de las plataformas.
+
+## Modelo mental imprescindible
+
+Git tiene varias zonas. Si entiendes estas zonas, casi todos los comandos dejan de parecer mágicos.
+
+```text
+working tree  ->  staging area  ->  repository local  ->  remote
+  editas          preparas          confirmas             compartes
+```
+
+### Working tree
+
+Es tu directorio de trabajo: los archivos reales que editas con tu editor.
+
+Cuando modificas `src/app.js`, ese cambio vive primero en el working tree.
+
+### Staging area
+
+También se llama **index**. Es una zona intermedia donde eliges exactamente qué cambios entrarán en el próximo commit.
+
+Esto es una de las mejores ideas de Git: no estás obligado a commitear todo lo que has tocado.
+
+Puedes tocar tres archivos y preparar solo uno:
+
+```bash
+git add src/app.js
+```
+
+O preparar solo partes de un archivo:
+
+```bash
+git add -p
+```
+
+### Repository local
+
+Es la base de datos Git que vive en `.git/`. Ahí se guardan commits, ramas, tags, referencias y objetos.
+
+Cuando haces commit, el cambio pasa del staging area al repositorio local.
+
+```bash
+git commit -m "fix: valida email antes de guardar usuario"
+```
+
+### Remote
+
+Es una copia del repositorio en otra ubicación: GitHub, GitLab, Bitbucket, un servidor interno o incluso otro directorio.
+
+El remoto habitual se llama `origin`, pero no hay nada especial en ese nombre. Es una convención.
+
+```bash
+git remote -v
+```
+
+### Commit
+
+Un commit es un snapshot del proyecto en un momento concreto. Tiene:
+
+- hash,
+- autor,
+- fecha,
+- mensaje,
+- referencia al commit padre,
+- contenido versionado.
+
+Ver el último commit:
+
+```bash
+git show HEAD
+```
+
+### HEAD
+
+`HEAD` apunta a dónde estás ahora.
+
+Normalmente apunta a la rama actual:
+
+```text
+HEAD -> main -> último commit
+```
+
+Cuando cambias de rama, `HEAD` cambia. Cuando haces un commit, la rama avanza y `HEAD` sigue apuntando a esa rama.
+
+### Branch
+
+Una rama es un puntero móvil a un commit.
+
+No pienses en una rama como una copia completa del proyecto. Piensa en ella como una etiqueta que se mueve cuando haces commits.
+
+```bash
+git branch
+```
+
+### Historial
+
+El historial no es una lista plana de archivos. Es un grafo de commits.
+
+Verlo de forma compacta:
+
+```bash
+git log --oneline --graph --decorate --all
+```
+
+Este comando debería estar entre los primeros que aprendes, porque te enseña la forma real del repositorio.
+
+## Configuración inicial profesional
+
+Configura tu identidad:
+
+```bash
+git config --global user.name "Tu Nombre"
+git config --global user.email "tu.email@example.com"
+```
+
+Define `main` como rama inicial:
+
+```bash
+git config --global init.defaultBranch main
+```
+
+Configura tu editor:
+
+```bash
+git config --global core.editor "code --wait"
+```
+
+Ver configuración:
+
+```bash
+git config --list
+```
+
+Ver de dónde sale cada valor:
+
+```bash
+git config --list --show-origin
+```
+
+Git tiene configuración por niveles:
+
+- `--system`: máquina completa.
+- `--global`: usuario.
+- `--local`: repositorio actual.
+
+La configuración local gana a la global. Esto es útil si en un repositorio de trabajo necesitas un email corporativo y en tus proyectos personales otro.
+
+```bash
+git config user.email "tu.email@empresa.com"
+```
+
+## SSH vs HTTPS
+
+Para trabajar con remotos, normalmente usarás SSH o HTTPS.
+
+URL HTTPS:
+
+```text
+https://github.com/usuario/proyecto.git
+```
+
+URL SSH:
+
+```text
+git@github.com:usuario/proyecto.git
+```
+
+En equipos profesionales, SSH suele ser más cómodo:
+
+- no escribes usuario y contraseña cada vez,
+- puedes usar claves por máquina,
+- las plataformas permiten revocar claves,
+- funciona bien con automatizaciones.
+
+Generar una clave SSH:
+
+```bash
+ssh-keygen -t ed25519 -C "tu.email@example.com"
+```
+
+Probar conexión con GitHub:
+
+```bash
+ssh -T git@github.com
+```
+
+Si trabajas con varias cuentas, define hosts separados en `~/.ssh/config`.
+
+```sshconfig
+Host github-personal
+  HostName github.com
+  User git
+  IdentityFile ~/.ssh/id_ed25519_personal
+
+Host github-work
+  HostName github.com
+  User git
+  IdentityFile ~/.ssh/id_ed25519_work
+```
+
+Entonces el remoto puede ser:
+
+```bash
+git remote add origin git@github-work:empresa/proyecto.git
+```
+
+## Crear un repositorio desde cero
+
+Crea el proyecto:
+
+```bash
+mkdir tienda-api
+cd tienda-api
+git init -b main
+```
+
+Comprueba estado:
+
+```bash
+git status
+```
+
+Crea un README:
+
+```bash
+printf "# Tienda API\n" > README.md
+```
+
+Crea `.gitignore`:
+
+```bash
+cat > .gitignore <<'EOF'
+node_modules/
+.env
+.DS_Store
+dist/
+coverage/
+*.log
+EOF
+```
+
+Prepara los archivos:
+
+```bash
+git add README.md .gitignore
+```
+
+Revisa qué vas a commitear:
+
+```bash
+git diff --staged
+```
+
+Crea el primer commit:
+
+```bash
+git commit -m "chore: inicializa repositorio"
+```
+
+## Conectar con un remoto
+
+Crea un repositorio vacío en GitHub, GitLab o Bitbucket. Después:
+
+```bash
+git remote add origin git@github.com:usuario/tienda-api.git
+```
+
+Verifica:
+
+```bash
+git remote -v
+```
+
+Sube `main` y guarda la relación con el remoto:
+
+```bash
+git push -u origin main
+```
+
+La opción `-u` configura el **upstream** de la rama. A partir de ese momento, en esa rama puedes usar:
+
+```bash
+git push
+git pull
+```
+
+sin repetir `origin main`.
+
+## El flujo diario
+
+El flujo básico de trabajo es:
+
+```bash
+git status
+git diff
+git add
+git diff --staged
+git commit
+git push
+```
+
+No lo acortes demasiado al principio. La parte importante no es escribir menos comandos, sino revisar mejor.
+
+### `git status`
+
+Tu primer reflejo debería ser:
+
+```bash
+git status
+```
+
+Te dice:
+
+- rama actual,
+- cambios modificados,
+- archivos nuevos,
+- archivos preparados para commit,
+- relación con la rama remota.
+
+### `git diff`
+
+Ver cambios no preparados:
+
+```bash
+git diff
+```
+
+Ver cambios preparados:
+
+```bash
+git diff --staged
+```
+
+Revisar el diff antes de commitear evita errores tontos: logs de debug, archivos equivocados, secretos, cambios de formato innecesarios.
+
+### `git add`
+
+Preparar archivo:
+
+```bash
+git add src/users.js
+```
+
+Preparar todo:
+
+```bash
+git add .
+```
+
+Preparar partes:
+
+```bash
+git add -p
+```
+
+`git add -p` es una frontera importante entre uso básico y uso profesional. Te permite separar cambios mezclados en commits coherentes.
+
+### `git commit`
+
+Commit con mensaje corto:
+
+```bash
+git commit -m "fix: evita crear usuarios sin email"
+```
+
+Commit abriendo editor:
+
+```bash
+git commit
+```
+
+Usa el editor cuando el cambio necesita contexto.
+
+Formato recomendable:
+
+```text
+tipo: resumen breve en imperativo
+
+Contexto opcional.
+Explica por qué existe el cambio, no solo qué archivos tocaste.
+```
+
+Ejemplo:
+
+```text
+fix: valida email antes de crear usuario
+
+La API aceptaba usuarios sin email cuando la petición venía desde el panel
+interno. Eso rompía el flujo de recuperación de contraseña.
+```
+
+### `git push`
+
+Sube commits locales al remoto:
+
+```bash
+git push
+```
+
+Si la rama no tiene upstream:
+
+```bash
+git push -u origin feature/validacion-email
+```
+
+### `git pull`
+
+Trae cambios remotos e intégralos:
+
+```bash
+git pull
+```
+
+Más adelante conviene entender que `pull` equivale a:
+
+```bash
+git fetch
+git merge
+```
+
+o, según configuración:
+
+```bash
+git fetch
+git rebase
+```
+
+En esta primera parte basta con saber que `pull` sincroniza tu rama local con su upstream remoto.
+
+## Staging area en serio
+
+Supón que has tocado `src/users.js` para dos cosas distintas:
+
+- corregir una validación,
+- renombrar una función por limpieza.
+
+Si haces:
+
+```bash
+git add src/users.js
+git commit -m "fix: valida email de usuario"
+```
+
+el commit incluirá también el renombrado. Eso ensucia el historial.
+
+Mejor:
+
+```bash
+git add -p src/users.js
+```
+
+Git te mostrará bloques de cambios y podrás decidir:
+
+```text
+y = stage this hunk
+n = do not stage this hunk
+s = split hunk
+e = edit hunk manually
+q = quit
+```
+
+Después:
+
+```bash
+git diff --staged
+git commit -m "fix: valida email de usuario"
+```
+
+Luego preparas el refactor:
+
+```bash
+git add -p src/users.js
+git commit -m "refactor: renombra helper de usuarios"
+```
+
+Ese es el tipo de cuidado que hace que un PR sea revisable.
+
+## Commits de calidad
+
+Un commit profesional cumple cuatro condiciones:
+
+- Es pequeño.
+- Es coherente.
+- Tiene un mensaje útil.
+- Puede revertirse sin arrastrar cambios no relacionados.
+
+Mal:
+
+```bash
+git commit -m "cosas"
+```
+
+Mejor:
+
+```bash
+git commit -m "fix: corrige validación de email en alta de usuarios"
+```
+
+Tipos habituales:
+
+```text
+feat: nueva funcionalidad
+fix: corrección de bug
+docs: documentación
+test: tests
+refactor: cambio interno sin alterar comportamiento
+chore: mantenimiento
+ci: pipeline
+build: build o dependencias
+perf: rendimiento
+```
+
+Antes de commitear:
+
+```bash
+git status
+git diff --staged
+```
+
+Preguntas útiles:
+
+- ¿Este commit tiene un único propósito?
+- ¿El mensaje explica el cambio?
+- ¿Hay archivos generados que no deberían entrar?
+- ¿Hay secretos o `.env`?
+- ¿Podría revertir este commit sin romper otra cosa no relacionada?
+
+## Modificar el último commit
+
+Si olvidaste añadir un archivo:
+
+```bash
+git add archivo-olvidado.js
+git commit --amend
+```
+
+Cambiar solo el mensaje:
+
+```bash
+git commit --amend -m "fix: valida email antes de crear usuario"
+```
+
+Regla importante: `--amend` reescribe el commit. Úsalo sin problema antes de hacer push. Si el commit ya está compartido, coordina antes.
+
+## Leer el historial
+
+Ver historial:
+
+```bash
+git log
+```
+
+Versión compacta:
+
+```bash
+git log --oneline
+```
+
+Grafo útil:
+
+```bash
+git log --oneline --graph --decorate --all
+```
+
+Ver un commit:
+
+```bash
+git show <hash>
+```
+
+Ver cambios entre dos commits:
+
+```bash
+git diff <hash-a> <hash-b>
+```
+
+Ver quién tocó cada línea:
+
+```bash
+git blame src/users.js
+```
+
+`git blame` no es para culpar personas. Es para encontrar contexto: cuándo se introdujo una línea, en qué commit, con qué mensaje y quizá en qué PR.
+
+## Buscar cuándo cambió algo
+
+Buscar commits por mensaje:
+
+```bash
+git log --grep="email"
+```
+
+Buscar commits que tocaron un archivo:
+
+```bash
+git log -- src/users.js
+```
+
+Buscar commits que introdujeron o eliminaron una cadena:
+
+```bash
+git log -S "validateEmail"
+```
+
+Esto es muy útil cuando investigas regresiones.
+
+## Escenario completo
+
+Flujo real para una corrección pequeña:
+
+```bash
+git status
+git pull
+
+# editar código
+
+git status
+git diff
+git add -p
+git diff --staged
+git commit -m "fix: valida email antes de crear usuario"
+git push
+```
+
+No parece espectacular, pero es sólido. Un buen flujo diario se basa en pasos aburridos y repetibles.
+
+## Errores comunes al empezar
+
+### Hacer commit sin revisar
+
+Solución:
+
+```bash
+git diff --staged
+```
+
+### Commits enormes
+
+Si un commit toca 40 archivos sin una razón clara, será difícil de revisar y revertir.
+
+Solución:
+
+```bash
+git add -p
+```
+
+### Mezclar cambios no relacionados
+
+Ejemplo malo:
+
+```text
+fix login, refactor users, update dependencies and format project
+```
+
+Haz commits separados.
+
+### Subir `.env`
+
+Solución:
+
+```bash
+printf ".env\n" >> .gitignore
+```
+
+Si ya lo subiste, no basta con borrarlo en un commit posterior. El secreto sigue en el historial. En ese caso hay que rotar la credencial y limpiar historial con cuidado.
+
+## Checklist antes de commitear
+
+- Estoy en la rama correcta.
+- `git status` no muestra sorpresas.
+- `git diff` revisado.
+- `git diff --staged` revisado.
+- El commit tiene un propósito único.
+- El mensaje es claro.
+- No hay secretos.
+- No hay archivos generados innecesarios.
+- El cambio compila o los tests relevantes pasan.
+
+## Glosario base
+
+**Working tree**: archivos reales que estás editando.
+
+**Staging area**: zona donde preparas el próximo commit.
+
+**Repository local**: base de datos Git dentro de `.git/`.
+
+**Commit**: snapshot versionado del proyecto.
+
+**HEAD**: referencia a la posición actual.
+
+**Branch**: puntero móvil a un commit.
+
+**Remote**: repositorio externo conectado al local.
+
+**Origin**: nombre convencional del remoto principal.
+
+**Upstream**: rama remota asociada a una rama local.
+
+**Diff**: diferencia entre dos estados.
+
+**Hash**: identificador de un objeto Git, normalmente un commit.
+
+## Cierre
+
+La base profesional de Git no está en saber muchos comandos, sino en trabajar con intención: revisar antes de commitear, separar cambios, escribir mensajes útiles y entender por qué Git distingue working tree, staging area, repositorio local y remoto. Con eso puedes empezar a trabajar con seguridad. En la segunda parte entraremos en colaboración real: ramas, remotos, forks, merge, rebase y conflictos.
